@@ -1,22 +1,24 @@
 package rpc
 
 import (
-	"errors"
+	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
-	"time"
 
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+	"google.golang.org/protobuf/proto"
 	"sparrow/logger"
 	"sparrow/registry"
 )
 
 type Server interface {
-	Serve() error
-	RegisterService(serviceInfo *ServiceInfo)
+	ServeAsync() error
+	RegisterService(service *ServiceInfo)
+	BuildRoutes()
 }
 
 type options struct {
@@ -53,11 +55,11 @@ type Option func(*options)
 
 func NewServer(opts ...Option) Server {
 	srv := &server{
-		opts:      &options{},
-		mux:       http.NewServeMux(),
-		providers: make(map[string]*ServiceInfo),
+		opts: &options{},
+		mux:  http.NewServeMux(),
 	}
 	srv.opts.apply(opts...)
+	srv.serviceRegistry = NewServiceRegistry(context.Background(), srv.Exporter(), srv.opts.registry)
 	srv.httpSrv = &http.Server{
 		Addr:    srv.opts.addr,
 		Handler: h2c.NewHandler(srv.mux, &http2.Server{}),
@@ -66,70 +68,94 @@ func NewServer(opts ...Option) Server {
 }
 
 type server struct {
-	opts      *options
-	httpSrv   *http.Server
-	mux       *http.ServeMux
-	providers map[string]*ServiceInfo
+	opts            *options
+	httpSrv         *http.Server
+	mux             *http.ServeMux
+	serviceRegistry *ServiceRegistry
 }
 
-func (s *server) RegisterService(serviceInfo *ServiceInfo) {
-	for _, methodInfo := range serviceInfo.Methods {
-		s.mux.Handle("/"+serviceInfo.ServiceName+"/"+methodInfo.MethodName, methodInfo.Handler)
-	}
-	s.providers[serviceInfo.ServiceName] = serviceInfo
-}
-
-func (s *server) Serve() error {
+func (s *server) ServeAsync() error {
 	if len(s.opts.addr) == 0 {
 		return fmt.Errorf("server addr is empty")
 	}
-
-	// 开启注册
-	if s.opts.registry != nil {
-		go func() {
-			_ = s.doRegister()
-			after := time.After(time.Second * 30)
-			for {
-				select {
-				case <-after:
-					_ = s.doRegister()
-					after = time.After(time.Second * 30)
-				}
-			}
-		}()
-	}
-
+	s.BuildRoutes()
 	go func() {
 		if err := s.httpSrv.ListenAndServe(); err != nil {
 			logger.Errorf("addr: %s serve error: %v", s.opts.addr, err)
 		}
 	}()
-
 	return nil
 }
 
-func (s *server) doRegister() error {
-	for service := range s.providers {
-		addr := s.opts.exporter
-		if len(addr) == 0 {
-			idx := strings.Index(s.opts.addr, ":")
-			if idx < 0 {
-				return errors.New("server addr error")
+func (s *server) RegisterService(serviceInfo *ServiceInfo) {
+	s.serviceRegistry.Register(serviceInfo)
+}
+
+func (s *server) BuildRoutes() {
+	routes := s.serviceRegistry.BuildRoutes()
+	for route, method := range routes {
+		httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 读取请求数据
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				s.rpcHandleError(w, err)
+				return
 			}
-			addr = LocalIP() + s.opts.addr[idx:]
-		}
-		err := s.opts.registry.Register(service, addr, &registry.NodeMetadata{
-			Address:    addr,
-			ID:         addr,
-			Weight:     1.0,
-			UpdateTime: time.Now().Unix(),
+
+			// 序列化请求数据
+			var input = method.NewInput().(proto.Message)
+			if err = proto.Unmarshal(data, input); err != nil {
+				s.rpcHandleError(w, err)
+				return
+			}
+
+			// 调用invoker链
+			// TODO 日志, 参数验证指标收集等中间件, 通过包装invoker
+			rsp := method.Handler.Invoke(r.Context(), &Request{
+				Method: method,
+				Input:  input,
+			})
+
+			// 这里需要区分一下, 这里应该属于业务错误
+			if rsp.Error != nil {
+				s.rpcHandleError(w, rsp.Error)
+				return
+			}
+
+			// 写入响应结果
+			rBytes, err := proto.Marshal(rsp.Message)
+			if err != nil {
+				s.rpcHandleError(w, err)
+				return
+			}
+
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(rBytes)
 		})
-		if err != nil {
-			logger.Errorf("register error service: %s address: %s", service, addr)
-			return err
+		s.mux.Handle(route, httpHandler)
+	}
+}
+
+func (s *server) rpcHandleError(w http.ResponseWriter, err error) {
+	code := http.StatusInternalServerError
+	switch e := err.(type) {
+	case Error:
+		code = int(e.Code())
+	}
+	// 错误结果通过http header头的方式响应
+	w.WriteHeader(code)
+	w.Header().Set("SparrowError", err.Error())
+}
+
+func (s *server) Exporter() string {
+	exporter := s.opts.exporter
+	if len(exporter) == 0 {
+		idx := strings.Index(s.opts.addr, ":")
+		if idx >= 0 {
+			exporter = LocalIP() + s.opts.addr[idx:]
 		}
 	}
-	return nil
+	return exporter
 }
 
 func LocalIP() string {

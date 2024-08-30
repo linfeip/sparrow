@@ -22,22 +22,19 @@ func TestService(t *testing.T) {
 		logger.Fatal(err)
 	}
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 1; i++ {
 		addr := fmt.Sprintf(":123%d", i)
 		server := rpc.NewServer(
 			rpc.WithAddress(addr),
 			rpc.WithRegistry(reg),
 			//rpc.WithExporter("192.168.218.199:1234"),
 		)
-
+		if err := server.ServeAsync(); err != nil {
+			logger.Fatal(err)
+		}
 		echoService := &service{}
 		server.RegisterService(BuildEchoServiceInfo(echoService))
-
-		go func() {
-			if err := server.Serve(); err != nil {
-				logger.Fatal(err)
-			}
-		}()
+		server.BuildRoutes()
 	}
 
 	echoClient := &EchoServiceClient{

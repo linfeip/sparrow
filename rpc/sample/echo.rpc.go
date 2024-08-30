@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -19,78 +20,48 @@ import (
 	"sparrow/rpc"
 )
 
-type Error interface {
-	error
-	Code() int32
-}
-
-type serviceErr struct {
-	err  error
-	code int32
-}
-
-func (e *serviceErr) Error() string {
-	return e.err.Error()
-}
-
-func (e *serviceErr) Code() int32 {
-	return e.code
-}
-
-func NewError(code int32, err error) Error {
-	return &serviceErr{err: err, code: code}
-}
-
 type EchoService interface {
 	Echo(ctx context.Context, request *EchoRequest) (*EchoResponse, error)
 }
 
+type xEchoService struct {
+	internal EchoService
+}
+
+func (x *xEchoService) Invoke(ctx context.Context, req *rpc.Request) *rpc.Response {
+	switch req.Method.MethodName {
+	case "Echo":
+		reply, err := x.internal.Echo(ctx, req.Input.(*EchoRequest))
+		return &rpc.Response{
+			Message: reply,
+			Error:   rpc.WrapError(err),
+		}
+	default:
+		return &rpc.Response{
+			Error: rpc.NewError(404, errors.New("method not found")),
+		}
+	}
+}
+
 func BuildEchoServiceInfo(service EchoService) *rpc.ServiceInfo {
+	xxxService := &xEchoService{
+		internal: service,
+	}
 	serviceInfo := &rpc.ServiceInfo{
 		ServiceName: "sample.EchoService",
 	}
 	serviceInfo.Methods = append(serviceInfo.Methods, &rpc.MethodInfo{
-		MethodName: "Echo",
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			data, err := io.ReadAll(r.Body)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-
-			var req = &EchoRequest{}
-			if err = proto.Unmarshal(data, req); err != nil {
-				writeError(w, err)
-				return
-			}
-
-			var rsp *EchoResponse
-			rsp, err = service.Echo(r.Context(), req)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-
-			rBytes, err := proto.Marshal(rsp)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-
-			_, _ = w.Write(rBytes)
-		}),
+		ServiceName: "sample.EchoService",
+		MethodName:  "Echo",
+		Handler:     xxxService,
+		NewInput: func() any {
+			return &EchoRequest{}
+		},
+		NewOutput: func() any {
+			return &EchoRequest{}
+		},
 	})
 	return serviceInfo
-}
-
-func writeError(w http.ResponseWriter, err error) {
-	switch e := err.(type) {
-	case Error:
-		w.WriteHeader(int(e.Code()))
-	default:
-		w.WriteHeader(http.StatusInternalServerError)
-	}
-	w.Header().Set("SparrowError", err.Error())
 }
 
 var client = &http.Client{

@@ -16,7 +16,7 @@ import (
 
 func TestServer(t *testing.T) {
 	srv := NewServer(WithAddress(":1234"))
-	if err := srv.Serve(); err != nil {
+	if err := srv.ServeAsync(); err != nil {
 		t.Fatal(err)
 	}
 
