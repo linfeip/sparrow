@@ -10,21 +10,26 @@ import (
 
 	"google.golang.org/protobuf/proto"
 	"sparrow/rpc"
-	"sparrow/rpc/middleware"
 )
+
+func NewEchoService(impl EchoService) rpc.ServiceInvoker {
+	return &xEchoService{
+		impl: impl,
+	}
+}
 
 type EchoService interface {
 	Echo(ctx context.Context, request *EchoRequest) (*EchoResponse, error)
 }
 
 type xEchoService struct {
-	internal EchoService
+	impl EchoService
 }
 
 func (x *xEchoService) Invoke(ctx context.Context, req *rpc.Request, callback rpc.CallbackFunc) {
 	switch req.Method.MethodName {
 	case "Echo":
-		reply, err := x.internal.Echo(ctx, req.Input.(*EchoRequest))
+		reply, err := x.impl.Echo(ctx, req.Input.(*EchoRequest))
 		callback(&rpc.Response{
 			Message: reply,
 			Error:   rpc.WrapError(err),
@@ -36,26 +41,18 @@ func (x *xEchoService) Invoke(ctx context.Context, req *rpc.Request, callback rp
 	}
 }
 
-func BuildEchoServiceInfo(service EchoService) *rpc.ServiceInfo {
-	xxxService := &xEchoService{
-		internal: service,
-	}
-	invokerChain := rpc.NewInvokerChain(xxxService)
-	invokerChain.AddLast(new(middleware.AccessLog))
-	invokerChain.AddLast(new(middleware.Skip))
-	invokerChain.AddLast(&middleware.DebugInter{Name: "123"})
-	EchoServiceEcho.Invoker = invokerChain
-	return EchoServiceInfo
+func (x *xEchoService) ServiceInfo() *rpc.ServiceInfo {
+	return EchoServiceServiceInfo
 }
 
-var EchoServiceInfo = &rpc.ServiceInfo{
+var EchoServiceServiceInfo = &rpc.ServiceInfo{
 	ServiceName: "sample.EchoService",
 	Methods: []*rpc.MethodInfo{
-		EchoServiceEcho,
+		EchoServiceEchoMethodInfo,
 	},
 }
 
-var EchoServiceEcho = &rpc.MethodInfo{
+var EchoServiceEchoMethodInfo = &rpc.MethodInfo{
 	ServiceName: "sample.EchoService",
 	MethodName:  "Echo",
 	NewInput: func() proto.Message {
@@ -66,13 +63,24 @@ var EchoServiceEcho = &rpc.MethodInfo{
 	},
 }
 
+var EchoServiceIncrMethodInfo = &rpc.MethodInfo{
+	ServiceName: "sample.EchoService",
+	MethodName:  "Incr",
+	NewInput: func() proto.Message {
+		return &IncrRequest{}
+	},
+	NewOutput: func() proto.Message {
+		return &IncrResponse{}
+	},
+}
+
 type SEchoServiceClient struct {
 	Invoker rpc.Invoker
 }
 
 func (e *SEchoServiceClient) Echo(ctx context.Context, request *EchoRequest) (*EchoResponse, error) {
 	rpcRequest := &rpc.Request{
-		Method: EchoServiceEcho,
+		Method: EchoServiceEchoMethodInfo,
 		Input:  request,
 	}
 	var resp *rpc.Response

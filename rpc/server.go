@@ -19,7 +19,7 @@ const ErrHeaderKey = "SparrowError"
 
 type Server interface {
 	ServeAsync() error
-	RegisterService(service *ServiceInfo)
+	ServiceRegistry() *ServiceRegistry
 	BuildRoutes()
 }
 
@@ -89,8 +89,8 @@ func (s *server) ServeAsync() error {
 	return nil
 }
 
-func (s *server) RegisterService(serviceInfo *ServiceInfo) {
-	s.serviceRegistry.Register(serviceInfo)
+func (s *server) ServiceRegistry() *ServiceRegistry {
+	return s.serviceRegistry
 }
 
 func (s *server) BuildRoutes() {
