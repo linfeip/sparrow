@@ -15,6 +15,8 @@ import (
 	"sparrow/registry"
 )
 
+const ErrHeaderKey = "SparrowError"
+
 type Server interface {
 	ServeAsync() error
 	RegisterService(service *ServiceInfo)
@@ -110,27 +112,26 @@ func (s *server) BuildRoutes() {
 			}
 
 			// 调用invoker链
-			// TODO 日志, 参数验证指标收集等中间件, 通过包装invoker
-			rsp := method.Handler.Invoke(r.Context(), &Request{
+			method.Invoker.Invoke(r.Context(), &Request{
 				Method: method,
 				Input:  input,
+			}, func(rsp *Response) {
+				// 这里需要区分一下, 这里应该属于业务错误
+				if rsp.Error != nil {
+					s.rpcHandleError(w, rsp.Error)
+					return
+				}
+
+				// 写入响应结果
+				rBytes, err := proto.Marshal(rsp.Message)
+				if err != nil {
+					s.rpcHandleError(w, err)
+					return
+				}
+
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(rBytes)
 			})
-
-			// 这里需要区分一下, 这里应该属于业务错误
-			if rsp.Error != nil {
-				s.rpcHandleError(w, rsp.Error)
-				return
-			}
-
-			// 写入响应结果
-			rBytes, err := proto.Marshal(rsp.Message)
-			if err != nil {
-				s.rpcHandleError(w, err)
-				return
-			}
-
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(rBytes)
 		})
 		s.mux.Handle(route, httpHandler)
 	}
@@ -143,8 +144,8 @@ func (s *server) rpcHandleError(w http.ResponseWriter, err error) {
 		code = int(e.Code())
 	}
 	// 错误结果通过http header头的方式响应
+	w.Header().Set(ErrHeaderKey, err.Error())
 	w.WriteHeader(code)
-	w.Header().Set("SparrowError", err.Error())
 }
 
 func (s *server) Exporter() string {

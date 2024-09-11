@@ -1,8 +1,6 @@
 package rpc
 
 import (
-	"context"
-
 	"google.golang.org/protobuf/proto"
 )
 
@@ -40,21 +38,17 @@ func WrapError(err error) Error {
 	}
 }
 
-type Invoker interface {
-	Invoke(ctx context.Context, req *Request) *Response
-}
-
 type ServiceInfo struct {
 	ServiceName string
 	Methods     []*MethodInfo
 }
 
 type MethodInfo struct {
-	NewInput    func() any
-	NewOutput   func() any
+	NewInput    func() proto.Message
+	NewOutput   func() proto.Message
 	ServiceName string
 	MethodName  string
-	Handler     Invoker
+	Invoker     Invoker
 }
 
 type Response struct {

@@ -5,19 +5,12 @@
 package sample
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
-	"io"
-	"net"
-	"net/http"
 
-	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/proto"
-	"sparrow/logger"
-	"sparrow/registry"
 	"sparrow/rpc"
+	"sparrow/rpc/middleware"
 )
 
 type EchoService interface {
@@ -28,18 +21,18 @@ type xEchoService struct {
 	internal EchoService
 }
 
-func (x *xEchoService) Invoke(ctx context.Context, req *rpc.Request) *rpc.Response {
+func (x *xEchoService) Invoke(ctx context.Context, req *rpc.Request, callback rpc.CallbackFunc) {
 	switch req.Method.MethodName {
 	case "Echo":
 		reply, err := x.internal.Echo(ctx, req.Input.(*EchoRequest))
-		return &rpc.Response{
+		callback(&rpc.Response{
 			Message: reply,
 			Error:   rpc.WrapError(err),
-		}
+		})
 	default:
-		return &rpc.Response{
+		callback(&rpc.Response{
 			Error: rpc.NewError(404, errors.New("method not found")),
-		}
+		})
 	}
 }
 
@@ -47,70 +40,48 @@ func BuildEchoServiceInfo(service EchoService) *rpc.ServiceInfo {
 	xxxService := &xEchoService{
 		internal: service,
 	}
-	serviceInfo := &rpc.ServiceInfo{
-		ServiceName: "sample.EchoService",
-	}
-	serviceInfo.Methods = append(serviceInfo.Methods, &rpc.MethodInfo{
-		ServiceName: "sample.EchoService",
-		MethodName:  "Echo",
-		Handler:     xxxService,
-		NewInput: func() any {
-			return &EchoRequest{}
-		},
-		NewOutput: func() any {
-			return &EchoRequest{}
-		},
-	})
-	return serviceInfo
+	invokerChain := rpc.NewInvokerChain(xxxService)
+	invokerChain.AddLast(new(middleware.AccessLog))
+	invokerChain.AddLast(new(middleware.Skip))
+	invokerChain.AddLast(&middleware.DebugInter{Name: "123"})
+	EchoServiceEcho.Invoker = invokerChain
+	return EchoServiceInfo
 }
 
-var client = &http.Client{
-	Transport: &http2.Transport{
-		AllowHTTP: true,
-		DialTLSContext: func(_ context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			return net.Dial(network, addr)
-		},
+var EchoServiceInfo = &rpc.ServiceInfo{
+	ServiceName: "sample.EchoService",
+	Methods: []*rpc.MethodInfo{
+		EchoServiceEcho,
 	},
 }
 
-type EchoServiceClient struct {
-	Discover registry.Discover
+var EchoServiceEcho = &rpc.MethodInfo{
+	ServiceName: "sample.EchoService",
+	MethodName:  "Echo",
+	NewInput: func() proto.Message {
+		return &EchoRequest{}
+	},
+	NewOutput: func() proto.Message {
+		return &EchoResponse{}
+	},
 }
 
-func (e *EchoServiceClient) Echo(ctx context.Context, request *EchoRequest) (*EchoResponse, error) {
-	data, err := proto.Marshal(request)
-	if err != nil {
-		return nil, err
-	}
+type SEchoServiceClient struct {
+	Invoker rpc.Invoker
+}
 
-	node, err := e.Discover.Select(ctx, "sample.EchoService")
-	if err != nil {
-		return nil, err
+func (e *SEchoServiceClient) Echo(ctx context.Context, request *EchoRequest) (*EchoResponse, error) {
+	rpcRequest := &rpc.Request{
+		Method: EchoServiceEcho,
+		Input:  request,
 	}
+	var resp *rpc.Response
+	e.Invoker.Invoke(ctx, rpcRequest, func(response *rpc.Response) {
+		resp = response
+	})
 
-	addr := node.Address
-	logger.Debugf("select node: %s", addr)
-	httpRequest, err := http.NewRequest(http.MethodPost, "http://"+addr+"/sample.EchoService/Echo", bytes.NewReader(data))
-	if err != nil {
-		return nil, err
+	if resp.Error != nil {
+		return nil, resp.Error
 	}
-
-	rsp, err := client.Do(httpRequest)
-	if err != nil {
-		return nil, err
-	}
-	defer rsp.Body.Close()
-
-	rBytes, err := io.ReadAll(rsp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var reply = &EchoResponse{}
-	err = proto.Unmarshal(rBytes, reply)
-	if err != nil {
-		return nil, err
-	}
-
-	return reply, nil
+	return resp.Message.(*EchoResponse), nil
 }
