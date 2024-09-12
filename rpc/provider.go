@@ -32,22 +32,23 @@ func (w *WrapServiceInvoker) ServiceInfo() *ServiceInfo {
 
 func NewServiceRegistry(ctx context.Context, exporter string, r registry.Registry) *ServiceRegistry {
 	serviceRegistry := &ServiceRegistry{
-		ctx:      ctx,
-		exporter: exporter,
-		registry: r,
-		services: make(map[string]ServiceInvoker),
+		ctx:        ctx,
+		exporter:   exporter,
+		registry:   r,
+		services:   make(map[string]ServiceInvoker),
+		middleware: NewMiddleware(),
 	}
 	go serviceRegistry.workLoop()
 	return serviceRegistry
 }
 
 type ServiceRegistry struct {
-	ctx          context.Context
-	mu           sync.RWMutex
-	services     map[string]ServiceInvoker
-	registry     registry.Registry
-	exporter     string // 注册的地址
-	interceptors []Interceptor
+	ctx        context.Context
+	mu         sync.RWMutex
+	services   map[string]ServiceInvoker
+	registry   registry.Registry
+	exporter   string // 注册的地址
+	middleware Middleware
 }
 
 func (s *ServiceRegistry) Register(service ServiceInvoker) {
@@ -58,24 +59,14 @@ func (s *ServiceRegistry) Register(service ServiceInvoker) {
 }
 
 func (s *ServiceRegistry) BuildService(service ServiceInvoker) ServiceInvoker {
-	// 构建包装中间件后的ServiceInvoker
-	var chain Invoker
-	chain = service
-	// 包装整个中间件
-	for i := len(s.interceptors) - 1; i >= 0; i-- {
-		interceptor := s.interceptors[i]
-		next := chain
-		chain = InvokerFunc(func(ctx context.Context, req *Request, callback CallbackFunc) {
-			interceptor.Invoke(ctx, req, callback, next)
-		})
-	}
+	chain := s.middleware.Build(service)
 	return WrapService(service.ServiceInfo(), chain)
 }
 
-func (s *ServiceRegistry) AddInterceptor(interceptor Interceptor) {
+func (s *ServiceRegistry) AddInterceptor(interceptors ...Interceptor) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.interceptors = append(s.interceptors, interceptor)
+	s.middleware.AddLast(interceptors...)
 }
 
 func (s *ServiceRegistry) BuildRoutes() map[string]*MethodInfo {

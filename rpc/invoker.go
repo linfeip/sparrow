@@ -2,9 +2,19 @@ package rpc
 
 import (
 	"context"
+
+	"google.golang.org/protobuf/proto"
 )
 
 type CallbackFunc func(*Response)
+
+func (c CallbackFunc) Response(message proto.Message, err Error) {
+	c(&Response{Message: message, Error: err})
+}
+
+func (c CallbackFunc) Success(message proto.Message) {
+	c(&Response{Message: message})
+}
 
 func (c CallbackFunc) Error(err Error) {
 	c(&Response{Error: err})

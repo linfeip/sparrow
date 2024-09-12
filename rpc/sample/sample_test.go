@@ -14,8 +14,6 @@ import (
 
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"sparrow/logger"
 	"sparrow/registry"
 	"sparrow/rpc"
@@ -23,34 +21,39 @@ import (
 )
 
 var reg registry.Registry
-var grpcServer *grpc.Server
+var client *rpc.Client
+
+func clientMiddleware() rpc.Interceptor {
+	return rpc.InterceptorFunc(func(ctx context.Context, req *rpc.Request, callback rpc.CallbackFunc, next rpc.Invoker) {
+		selectAddr := ctx.Value(rpc.KeySelectedAddr).(string)
+		start := time.Now()
+		logger.Debugf("service: %s method: %s client select node addr: %s", req.Method.ServiceName, req.Method.MethodName, selectAddr)
+		next.Invoke(ctx, req, callback)
+		logger.Debugf("client do service: %s method: %s elapsed: %s", req.Method.ServiceName, req.Method.MethodName, time.Since(start))
+	})
+}
 
 func init() {
+	var err error
 	reg = newRegistry()
-	startServer(reg)
-	grpcServer = grpc.NewServer()
-	RegisterEchoServiceServer(grpcServer, &testGrpcEchoService{})
-	lis, err := net.Listen("tcp", ":1222")
+	startServer(reg, ":1230")
+	startServer(reg, ":1231")
+	client, err = rpc.NewClient(
+		rpc.WithClientDiscover(reg),
+		rpc.WithClientInvoker(rpc.NewH2ClientInvoker()),
+	)
 	if err != nil {
 		panic(err)
 	}
-	go func() {
-		err = grpcServer.Serve(lis)
-		if err != nil {
-			panic(err)
-		}
-	}()
-
+	client.AddLast(clientMiddleware())
 	time.Sleep(time.Second)
 }
 
 func TestService(t *testing.T) {
-	echoClient := &SEchoServiceClient{
-		Invoker: rpc.NewClient(rpc.WithClientAddr("127.0.0.1:1230")),
-	}
+	echoClient := NewEchoServiceClient(client)
 
 	for {
-		time.Sleep(3 * time.Second)
+		time.Sleep(2 * time.Second)
 		result, err := echoClient.Echo(context.Background(), &EchoRequest{
 			Message: "HelloWorld",
 		})
@@ -62,51 +65,14 @@ func TestService(t *testing.T) {
 	}
 }
 
-type testGrpcEchoService struct {
-	UnimplementedEchoServiceServer
-}
-
-func (t *testGrpcEchoService) Echo(ctx context.Context, request *EchoRequest) (*EchoResponse, error) {
-	return &EchoResponse{
-		Message: request.GetMessage(),
-	}, nil
-}
-
-func (t *testGrpcEchoService) Incr(ctx context.Context, request *IncrRequest) (*IncrResponse, error) {
-	panic("implement me")
-}
-
 func BenchmarkService(b *testing.B) {
-	echoClient := &SEchoServiceClient{
-		Invoker: rpc.NewClient(rpc.WithClientAddr("127.0.0.1:1230")),
-	}
+	echoClient := NewEchoServiceClient(client)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			_, err := echoClient.Echo(context.Background(), &EchoRequest{
-				Message: "HelloWorld",
-			})
-			if err != nil {
-				panic(err)
-			}
-		}
-	})
-}
-
-func BenchmarkGrpcService(b *testing.B) {
-	conn, err := grpc.NewClient("127.0.0.1:1222", grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
-	grpcClient := NewEchoServiceClient(conn)
-	b.ReportAllocs()
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_, err := grpcClient.Echo(context.Background(), &EchoRequest{
 				Message: "HelloWorld",
 			})
 			if err != nil {
@@ -260,9 +226,9 @@ func newRegistry() registry.Registry {
 	return r
 }
 
-func startServer(reg registry.Registry) {
+func startServer(reg registry.Registry, addr string) {
 	server := rpc.NewServer(
-		rpc.WithAddress(":1230"),
+		rpc.WithAddress(addr),
 		rpc.WithRegistry(reg),
 		//rpc.WithExporter("192.168.218.199:1234"),
 	)

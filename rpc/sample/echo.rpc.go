@@ -74,20 +74,25 @@ var EchoServiceIncrMethodInfo = &rpc.MethodInfo{
 	},
 }
 
-type SEchoServiceClient struct {
-	Invoker rpc.Invoker
+func NewEchoServiceClient(client *rpc.Client) EchoService {
+	return &EchoServiceClient{
+		client: client,
+	}
 }
 
-func (e *SEchoServiceClient) Echo(ctx context.Context, request *EchoRequest) (*EchoResponse, error) {
+type EchoServiceClient struct {
+	client *rpc.Client
+}
+
+func (e *EchoServiceClient) Echo(ctx context.Context, request *EchoRequest) (*EchoResponse, error) {
 	rpcRequest := &rpc.Request{
 		Method: EchoServiceEchoMethodInfo,
 		Input:  request,
 	}
 	var resp *rpc.Response
-	e.Invoker.Invoke(ctx, rpcRequest, func(response *rpc.Response) {
+	e.client.Invoke(ctx, rpcRequest, func(response *rpc.Response) {
 		resp = response
 	})
-
 	if resp.Error != nil {
 		return nil, resp.Error
 	}

@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package sample;
+
+option go_package = "./;grpc";
+
+message EchoRequest {
+  string message = 1;
+}
+
+message EchoResponse {
+  string message = 1;
+}
+
+message IncrRequest {
+  int32 num = 1;
+}
+
+message IncrResponse {
+}
+
+service EchoService {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+  rpc Incr(IncrRequest) returns (IncrResponse);
+  rpc Pubsub(stream PubsubArgs) returns (stream PubsubReply);
+}
+
+message PubsubArgs {
+  string data = 1;
+}
+
+message PubsubReply {
+  string data = 1;
+}

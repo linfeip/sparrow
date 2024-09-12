@@ -9,38 +9,43 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 
 	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/proto"
 	"sparrow/registry"
 )
 
-func NewClient(opts ...ClientOption) *Client {
-	httpClient := &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(_ context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				return net.Dial(network, addr)
-			},
-		},
-	}
+var KeySelectedAddr = "KeySelectedAddr"
 
+func NewClient(opts ...ClientOption) (*Client, error) {
 	cliOpts := &ClientOptions{}
 	for _, opt := range opts {
 		opt(cliOpts)
 	}
 
 	client := &Client{
-		clientOpts: cliOpts,
-		client:     httpClient,
+		ClientOptions: cliOpts,
+		middleware:    NewMiddleware(),
 	}
 
-	return client
+	if len(client.addr) != 0 && client.discover != nil {
+		return nil, errors.New("discover or addr only choice one")
+	}
+
+	if client.invoker == nil {
+		return nil, errors.New("invoker is required")
+	}
+
+	client.invoker = client.middleware.Build(client.invoker)
+
+	return client, nil
 }
 
 type ClientOptions struct {
 	discover registry.Discover
 	addr     string
+	invoker  Invoker
 }
 
 type ClientOption func(*ClientOptions)
@@ -57,13 +62,61 @@ func WithClientAddr(addr string) ClientOption {
 	}
 }
 
+func WithClientInvoker(invoker Invoker) ClientOption {
+	return func(opts *ClientOptions) {
+		opts.invoker = invoker
+	}
+}
+
 type Client struct {
-	clientOpts *ClientOptions
-	client     *http.Client
+	*ClientOptions
+	mu         sync.Mutex
+	middleware Middleware
+}
+
+func (c *Client) AddLast(interceptors ...Interceptor) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.middleware.AddLast(interceptors...)
+	c.invoker = c.middleware.Build(c.invoker)
 }
 
 func (c *Client) Invoke(ctx context.Context, req *Request, callback CallbackFunc) {
-	addr := c.clientOpts.addr
+	// TODO: client的invoker从外部传入， 可以实现不同的invoker， 比如http2Invoker， tcpInvoker。。。
+	addr := c.addr
+	if len(addr) == 0 {
+		// 判断是否引入了注册中心
+		node, err := c.discover.Select(ctx, req.Method.ServiceName)
+		if err != nil {
+			callback.Error(WrapError(err))
+			return
+		}
+		addr = node.Address
+	}
+	ctx = context.WithValue(ctx, KeySelectedAddr, addr)
+	c.invoker.Invoke(ctx, req, callback)
+}
+
+func NewH2ClientInvoker() Invoker {
+	httpClient := &http.Client{
+		Transport: &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(_ context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+				return net.Dial(network, addr)
+			},
+		},
+	}
+	return &H2ClientInvoker{
+		client: httpClient,
+	}
+}
+
+type H2ClientInvoker struct {
+	client *http.Client
+}
+
+func (h *H2ClientInvoker) Invoke(ctx context.Context, req *Request, callback CallbackFunc) {
+	addr := ctx.Value(KeySelectedAddr).(string)
 	var data []byte
 	var err error
 	switch input := req.Input.(type) {
@@ -85,11 +138,9 @@ func (c *Client) Invoke(ctx context.Context, req *Request, callback CallbackFunc
 	}
 	url := fmt.Sprintf("http://%s/%s/%s", addr, req.Method.ServiceName, req.Method.MethodName)
 	httpRequest, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
-	rsp, err := c.client.Do(httpRequest)
+	rsp, err := h.client.Do(httpRequest)
 	if err != nil {
-		callback(&Response{
-			Error: WrapError(err),
-		})
+		callback.Error(WrapError(err))
 		return
 	}
 	defer rsp.Body.Close()
@@ -103,17 +154,11 @@ func (c *Client) Invoke(ctx context.Context, req *Request, callback CallbackFunc
 		output := req.Method.NewOutput().(proto.Message)
 		err = proto.Unmarshal(out, output)
 		if err != nil {
-			callback(&Response{
-				Error: WrapError(err),
-			})
+			callback.Error(WrapError(err))
 			return
 		}
-		callback(&Response{
-			Message: output,
-		})
+		callback.Success(output)
 	} else {
-		callback(&Response{
-			Error: NewError(int32(rsp.StatusCode), errors.New(rsp.Header.Get(ErrHeaderKey))),
-		})
+		callback.Error(NewError(int32(rsp.StatusCode), errors.New(rsp.Header.Get(ErrHeaderKey))))
 	}
 }
