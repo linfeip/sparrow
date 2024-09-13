@@ -51,7 +51,6 @@ func init() {
 
 func TestService(t *testing.T) {
 	echoClient := NewEchoServiceClient(client)
-
 	for {
 		time.Sleep(2 * time.Second)
 		result, err := echoClient.Echo(context.Background(), &EchoRequest{

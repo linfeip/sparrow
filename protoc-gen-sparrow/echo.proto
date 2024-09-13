@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package sample;
+package main;
 
-option go_package = "./;sample";
+option go_package = "./;main";
 
 message EchoRequest {
   string message = 1;
