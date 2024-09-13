@@ -4,9 +4,17 @@
 package sample
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
 
+	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/proto"
 	"sparrow/rpc"
 )
@@ -14,6 +22,7 @@ import (
 var EchoServiceEchoMethodInfo = &rpc.MethodInfo{
 	ServiceName: "sample.EchoService",
 	MethodName:  "Echo",
+	CallType:    rpc.CallUnary,
 	NewInput: func() proto.Message {
 		return &EchoRequest{}
 	},
@@ -24,6 +33,7 @@ var EchoServiceEchoMethodInfo = &rpc.MethodInfo{
 var EchoServiceIncrMethodInfo = &rpc.MethodInfo{
 	ServiceName: "sample.EchoService",
 	MethodName:  "Incr",
+	CallType:    rpc.CallUnary,
 	NewInput: func() proto.Message {
 		return &IncrRequest{}
 	},
@@ -32,22 +42,35 @@ var EchoServiceIncrMethodInfo = &rpc.MethodInfo{
 	},
 }
 
+var EchoServicePubsubMethodInfo = &rpc.MethodInfo{
+	ServiceName: "sample.EchoService",
+	MethodName:  "Pubsub",
+	CallType:    rpc.CallBidiStream,
+	NewInput: func() proto.Message {
+		return &PubsubArgs{}
+	},
+	NewOutput: func() proto.Message {
+		return &PubsubReply{}
+	},
+}
+
 var EchoServiceServiceInfo = &rpc.ServiceInfo{
 	ServiceName: "sample.EchoService",
 	Methods: []*rpc.MethodInfo{
 		EchoServiceEchoMethodInfo,
 		EchoServiceIncrMethodInfo,
+		EchoServicePubsubMethodInfo,
 	},
 }
 
-func NewEchoService(impl EchoService) rpc.ServiceInvoker {
+func NewEchoServiceServer(impl EchoServiceServer) rpc.ServiceInvoker {
 	return &xxxEchoService{
 		impl: impl,
 	}
 }
 
 type xxxEchoService struct {
-	impl EchoService
+	impl EchoServiceServer
 }
 
 func (x *xxxEchoService) Invoke(ctx context.Context, req *rpc.Request, callback rpc.CallbackFunc) {
@@ -64,6 +87,19 @@ func (x *xxxEchoService) Invoke(ctx context.Context, req *rpc.Request, callback 
 			Message: reply,
 			Error:   rpc.WrapError(err),
 		})
+	case "Pubsub":
+		err := x.impl.Pubsub(ctx, &EchoServicePubsubServer{
+			stream: &bidiStream{
+				reader: req.Reader,
+				writer: req.Writer,
+				marshaller: &ProtoMarshaller{
+					NewProto: func() proto.Message {
+						return &PubsubArgs{}
+					},
+				},
+			},
+		})
+		callback(&rpc.Response{Error: rpc.WrapError(err)})
 	default:
 		callback(&rpc.Response{
 			Error: rpc.NewError(404, errors.New("method not found")),
@@ -75,9 +111,42 @@ func (x *xxxEchoService) ServiceInfo() *rpc.ServiceInfo {
 	return EchoServiceServiceInfo
 }
 
+type EchoServiceServer interface {
+	Echo(ctx context.Context, request *EchoRequest) (*EchoResponse, error)
+	Incr(ctx context.Context, request *IncrRequest) (*IncrResponse, error)
+	Pubsub(context.Context, IEchoServicePubsubServer) error
+}
+
+type IEchoServicePubsubServer interface {
+	Send(*PubsubReply) error
+	Recv() (*PubsubArgs, error)
+}
+
+type EchoServicePubsubServer struct {
+	stream BidiStream
+}
+
+func (e *EchoServicePubsubServer) Send(reply *PubsubReply) error {
+	return e.stream.Send(reply)
+}
+
+func (e *EchoServicePubsubServer) Recv() (*PubsubArgs, error) {
+	reply, err := e.stream.Recv()
+	if err != nil {
+		return nil, err
+	}
+	return reply.(*PubsubArgs), nil
+}
+
 type EchoService interface {
 	Echo(ctx context.Context, request *EchoRequest) (*EchoResponse, error)
 	Incr(ctx context.Context, request *IncrRequest) (*IncrResponse, error)
+	Pubsub(ctx context.Context) (IEchoServicePubsubClient, error)
+}
+
+type IEchoServicePubsubClient interface {
+	Send(*PubsubArgs) error
+	Recv() (*PubsubReply, error)
 }
 
 func NewEchoServiceClient(client *rpc.Client) EchoService {
@@ -104,6 +173,7 @@ func (e *EchoServiceClient) Echo(ctx context.Context, request *EchoRequest) (*Ec
 	}
 	return resp.Message.(*EchoResponse), nil
 }
+
 func (e *EchoServiceClient) Incr(ctx context.Context, request *IncrRequest) (*IncrResponse, error) {
 	rpcRequest := &rpc.Request{
 		Method: EchoServiceIncrMethodInfo,
@@ -117,4 +187,132 @@ func (e *EchoServiceClient) Incr(ctx context.Context, request *IncrRequest) (*In
 		return nil, resp.Error
 	}
 	return resp.Message.(*IncrResponse), nil
+}
+
+var tmpClient = &http.Client{
+	Transport: &http2.Transport{
+		AllowHTTP: true,
+		DialTLSContext: func(_ context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			return net.Dial(network, addr)
+		},
+	},
+}
+
+func (e *EchoServiceClient) Pubsub(ctx context.Context) (IEchoServicePubsubClient, error) {
+	var rspReady = make(chan struct{}, 1)
+	var rsp *http.Response
+	requestReader, requestWriter := io.Pipe()
+	stream := &bidiStream{
+		marshaller: &ProtoMarshaller{
+			NewProto: func() proto.Message {
+				return &PubsubReply{}
+			},
+		},
+		writer: requestWriter,
+		ready:  rspReady,
+	}
+	addr := "127.0.0.1:1230"
+	makeRequest := func() {
+		defer close(rspReady)
+		var req *http.Request
+		var err error
+		req, err = http.NewRequest("POST", fmt.Sprintf("http://%s/sample.EchoService/Pubsub", addr), requestReader)
+		if err != nil {
+			panic(err)
+		}
+
+		rsp, err = tmpClient.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		stream.reader = rsp.Body
+	}
+	go makeRequest()
+	return &EchoServicePubsubClient{stream: stream}, nil
+}
+
+type ProtoMarshaller struct {
+	NewProto func() proto.Message
+}
+
+func (p *ProtoMarshaller) Marshal(a any) ([]byte, error) {
+	return proto.Marshal(a.(proto.Message))
+}
+
+func (p *ProtoMarshaller) Unmarshall(data []byte) (any, error) {
+	var result = p.NewProto()
+	err := proto.Unmarshal(data, result)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+type BidiStream interface {
+	Send(any) error
+	Recv() (any, error)
+	Ready() chan struct{}
+}
+
+type Marshaller interface {
+	Marshal(any) ([]byte, error)
+	Unmarshall([]byte) (any, error)
+}
+
+type bidiStream struct {
+	reader     io.ReadCloser
+	writer     io.Writer
+	marshaller Marshaller
+	ready      chan struct{}
+}
+
+func (b *bidiStream) Send(v any) error {
+	data, err := b.marshaller.Marshal(v)
+	if err != nil {
+		return err
+	}
+	size := len(data)
+	var sizeBytes [4]byte
+	binary.LittleEndian.PutUint32(sizeBytes[:], uint32(size))
+	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
+	buffer.Write(sizeBytes[:])
+	buffer.Write(data)
+	_, err = b.writer.Write(buffer.Bytes())
+	return err
+}
+
+func (b *bidiStream) Recv() (any, error) {
+	sizeBytes := [4]byte{}
+	err := binary.Read(b.reader, binary.LittleEndian, &sizeBytes)
+	if err != nil {
+		return nil, err
+	}
+	var size = binary.LittleEndian.Uint32(sizeBytes[:])
+	buffer := make([]byte, 1024)
+	_, err = b.reader.Read(buffer[:size])
+	if err != nil {
+		return nil, err
+	}
+	return b.marshaller.Unmarshall(buffer[:size])
+}
+
+func (b *bidiStream) Ready() chan struct{} {
+	return b.ready
+}
+
+type EchoServicePubsubClient struct {
+	stream BidiStream
+}
+
+func (e *EchoServicePubsubClient) Send(args *PubsubArgs) error {
+	return e.stream.Send(args)
+}
+
+func (e *EchoServicePubsubClient) Recv() (*PubsubReply, error) {
+	<-e.stream.Ready()
+	reply, err := e.stream.Recv()
+	if err != nil {
+		return nil, err
+	}
+	return reply.(*PubsubReply), nil
 }

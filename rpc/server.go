@@ -97,44 +97,76 @@ func (s *server) BuildRoutes() {
 	routes := s.serviceRegistry.BuildRoutes()
 	for route, method := range routes {
 		httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 读取请求数据
-			data, err := io.ReadAll(r.Body)
-			if err != nil {
-				s.rpcHandleError(w, err)
-				return
-			}
-
-			// 序列化请求数据
-			var input = method.NewInput().(proto.Message)
-			if err = proto.Unmarshal(data, input); err != nil {
-				s.rpcHandleError(w, err)
-				return
-			}
-
-			// 调用invoker链
-			method.Invoker.Invoke(r.Context(), &Request{
-				Method: method,
-				Input:  input,
-			}, func(rsp *Response) {
-				// 这里需要区分一下, 这里应该属于业务错误
-				if rsp.Error != nil {
-					s.rpcHandleError(w, rsp.Error)
-					return
-				}
-
-				// 写入响应结果
-				rBytes, err := proto.Marshal(rsp.Message)
+			switch method.CallType {
+			case CallUnary:
+				// 读取请求数据
+				data, err := io.ReadAll(r.Body)
 				if err != nil {
 					s.rpcHandleError(w, err)
 					return
 				}
 
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write(rBytes)
-			})
+				// 序列化请求数据
+				var input = method.NewInput().(proto.Message)
+				if err = proto.Unmarshal(data, input); err != nil {
+					s.rpcHandleError(w, err)
+					return
+				}
+				// 调用invoker链
+				method.Invoker.Invoke(r.Context(), &Request{
+					Method: method,
+					Input:  input,
+				}, func(rsp *Response) {
+					// 这里需要区分一下, 这里应该属于业务错误
+					if rsp.Error != nil {
+						s.rpcHandleError(w, rsp.Error)
+						return
+					}
+
+					// 写入响应结果
+					rBytes, err := proto.Marshal(rsp.Message)
+					if err != nil {
+						s.rpcHandleError(w, err)
+						return
+					}
+
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write(rBytes)
+				})
+			case CallBidiStream:
+				method.Invoker.Invoke(r.Context(), &Request{
+					Method: method,
+					Input:  nil,
+					Reader: r.Body,
+					Writer: &Http2ResponseWriter{Writer: w},
+				}, func(rsp *Response) {
+					// 这里需要区分一下, 这里应该属于业务错误
+					if rsp.Error != nil {
+						s.rpcHandleError(w, rsp.Error)
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+				})
+			}
+
 		})
 		s.mux.Handle(route, httpHandler)
 	}
+}
+
+type Http2ResponseWriter struct {
+	io.Writer
+}
+
+func (w *Http2ResponseWriter) Write(p []byte) (n int, err error) {
+	n, err = w.Writer.Write(p)
+	if err != nil {
+		return
+	}
+	if flusher, ok := w.Writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return
 }
 
 func (s *server) rpcHandleError(w http.ResponseWriter, err error) {

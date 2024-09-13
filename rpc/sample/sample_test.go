@@ -22,6 +22,7 @@ import (
 
 var reg registry.Registry
 var client *rpc.Client
+var backCtx = context.Background()
 
 func clientMiddleware() rpc.Interceptor {
 	return rpc.InterceptorFunc(func(ctx context.Context, req *rpc.Request, callback rpc.CallbackFunc, next rpc.Invoker) {
@@ -37,7 +38,7 @@ func init() {
 	var err error
 	reg = newRegistry()
 	startServer(reg, ":1230")
-	startServer(reg, ":1231")
+	//startServer(reg, ":1231")
 	client, err = rpc.NewClient(
 		rpc.WithClientDiscover(reg),
 		rpc.WithClientInvoker(rpc.NewH2ClientInvoker()),
@@ -61,6 +62,28 @@ func TestService(t *testing.T) {
 			continue
 		}
 		logger.Debugf("client send Echo reply: %s", result.Message)
+	}
+}
+
+func TestStreamService(t *testing.T) {
+	cli := NewEchoServiceClient(client)
+	stream, err := cli.Pubsub(backCtx)
+	if err != nil {
+		panic(err)
+	}
+	for {
+		err = stream.Send(&PubsubArgs{
+			Data: time.Now().String(),
+		})
+		if err != nil {
+			panic(err)
+		}
+		reply, err := stream.Recv()
+		if err != nil {
+			panic(err)
+		}
+		logger.Debugf("pubsub recv: %s", reply.Data)
+		time.Sleep(time.Second)
 	}
 }
 
@@ -237,6 +260,6 @@ func startServer(reg registry.Registry, addr string) {
 	echoService := &service{}
 	sr := server.ServiceRegistry()
 	sr.AddInterceptor(middleware.AccessLog())
-	sr.Register(NewEchoService(echoService))
+	sr.Register(NewEchoServiceServer(echoService))
 	server.BuildRoutes()
 }
