@@ -1,8 +1,26 @@
 package rpc
 
 import (
+	"bytes"
+	"sync"
+
+	"github.com/panjf2000/ants/v2"
 	"google.golang.org/protobuf/proto"
 )
+
+var GoPool, _ = ants.NewPool(1024)
+
+var BufPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 1024))
+	},
+}
+
+func init() {
+	for i := 0; i < 1024; i++ {
+		BufPool.Put(BufPool.New())
+	}
+}
 
 type Error interface {
 	error

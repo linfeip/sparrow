@@ -142,7 +142,10 @@ func (h *H2ClientInvoker) OpenStream(ctx context.Context, req *Request) (*BidiSt
 		}
 		stream.SetReader(rsp.Body)
 	}
-	go makeRequest()
+	err := GoPool.Submit(makeRequest)
+	if err != nil {
+		return nil, err
+	}
 	return stream, nil
 }
 

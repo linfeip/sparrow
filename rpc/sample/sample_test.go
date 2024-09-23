@@ -19,7 +19,6 @@ import (
 	"sparrow/logger"
 	"sparrow/registry"
 	"sparrow/rpc"
-	"sparrow/rpc/middleware"
 )
 
 var reg registry.Registry
@@ -302,7 +301,7 @@ func startServer(reg registry.Registry, addr string) {
 	}
 	echoService := &service{}
 	sr := server.ServiceRegistry()
-	sr.AddInterceptor(middleware.AccessLog())
+	//sr.AddInterceptor(middleware.AccessLog())
 	sr.Register(NewEchoServiceServer(echoService))
 	server.BuildRoutes()
 }

@@ -74,14 +74,20 @@ func (b *BidiStream) Recv() (proto.Message, error) {
 	}
 
 	total := binary.LittleEndian.Uint32(totalBytes[:])
-	buf := make([]byte, int(total))
-	_, err = io.ReadFull(b.reader, buf)
+	buffer := BufPool.Get().(*bytes.Buffer)
+	buffer.Grow(int(total))
+	defer func() {
+		buffer.Reset()
+		BufPool.Put(buffer)
+	}()
+
+	_, err = io.CopyN(buffer, b.reader, int64(total))
 	if err != nil {
 		return nil, err
 	}
 
 	payload := &ProtoPayload{}
-	err = proto.Unmarshal(buf, payload)
+	err = proto.Unmarshal(buffer.Bytes(), payload)
 	if err != nil {
 		return nil, err
 	}
