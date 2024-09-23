@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+	"google.golang.org/protobuf/proto"
 	"sparrow/logger"
 	"sparrow/registry"
 )
@@ -100,43 +101,31 @@ func (s *server) BuildRoutes() {
 			stream.SetWriter(&Http2ResponseWriter{Writer: w})
 			stream.SetReader(r.Body)
 			defer stream.Close()
+			var input proto.Message
 			switch method.CallType {
 			case CallType_Request:
-				input, err := stream.Recv()
+				var err error
+				input, err = stream.Recv()
 				if err != nil {
 					_ = stream.SendResponse(nil, WrapError(err))
 					return
 				}
-				method.Invoker.Invoke(r.Context(), &Request{
-					Method: method,
-					Input:  input,
-				}, func(rsp *Response) {
-					_ = stream.SendResponse(rsp.Message, rsp.Error)
-				})
-			case CallType_BidiStream:
-				method.Invoker.Invoke(r.Context(), &Request{
-					Method: method,
-					Input:  nil,
-					Stream: stream,
-				}, func(rsp *Response) {
-					// 这里需要区分一下, 这里应该属于业务错误
-					_ = stream.SendResponse(rsp.Message, rsp.Error)
-				})
+			case CallType_BidiStream, CallType_ClientStream:
 			case CallType_ServerStream:
-				input, err := stream.Recv()
+				var err error
+				input, err = stream.Recv()
 				if err != nil {
 					_ = stream.SendResponse(nil, WrapError(err))
 					return
 				}
-				method.Invoker.Invoke(r.Context(), &Request{
-					Method: method,
-					Input:  input,
-					Stream: stream,
-				}, func(rsp *Response) {
-					// 这里需要区分一下, 这里应该属于业务错误
-					_ = stream.SendResponse(rsp.Message, rsp.Error)
-				})
 			}
+			method.Invoker.Invoke(r.Context(), &Request{
+				Method: method,
+				Input:  input,
+				Stream: stream,
+			}, func(rsp *Response) {
+				_ = stream.SendResponse(rsp.Message, rsp.Error)
+			})
 		})
 		s.mux.Handle(route, httpHandler)
 	}
