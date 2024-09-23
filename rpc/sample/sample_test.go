@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -84,6 +86,47 @@ func TestStreamService(t *testing.T) {
 		}
 		logger.Debugf("pubsub recv: %s", reply.Data)
 		time.Sleep(time.Second)
+	}
+}
+
+func TestClientStreamService(t *testing.T) {
+	cli := NewEchoServiceClient(client)
+	stream, err := cli.ClientStream(backCtx)
+	if err != nil {
+		panic(err)
+	}
+	for i := 0; i < 2; i++ {
+		err = stream.Send(&ClientStreamArgs{
+			Value: fmt.Sprint(i),
+		})
+		if err != nil {
+			panic(err)
+		}
+	}
+	reply, err := stream.CloseAndRecv()
+	if err != nil {
+		panic(err)
+	}
+	logger.Debugf("recv reply: %s", reply.GetValue())
+}
+
+func TestServerStreamService(t *testing.T) {
+	cli := NewEchoServiceClient(client)
+	stream, err := cli.ServerStream(backCtx, &ServerStreamArgs{
+		Value: "5",
+	})
+	if err != nil {
+		panic(err)
+	}
+	for {
+		msg, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			panic(err)
+		}
+		logger.Debugf("server recv: %s", msg.GetValue())
 	}
 }
 

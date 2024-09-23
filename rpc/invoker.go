@@ -39,6 +39,11 @@ type ServiceInvoker interface {
 	Invoker
 }
 
+type ClientInvoker interface {
+	Invoker
+	OpenStream(ctx context.Context, req *Request) (*BidiStream, error)
+}
+
 type InvokerFunc func(ctx context.Context, req *Request, callback CallbackFunc)
 
 func (f InvokerFunc) Invoke(ctx context.Context, req *Request, callback CallbackFunc) {

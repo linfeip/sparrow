@@ -4,13 +4,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const (
-	CallUnary        = "unary"
-	CallClientStream = "client-stream"
-	CallServerStream = "server-stream"
-	CallBidiStream   = "bidi-stream"
-)
-
 type Error interface {
 	error
 	Code() int32
@@ -55,7 +48,7 @@ type MethodInfo struct {
 	NewOutput   func() proto.Message
 	ServiceName string
 	MethodName  string
-	CallType    string
+	CallType    CallType
 	Invoker     Invoker
 }
 

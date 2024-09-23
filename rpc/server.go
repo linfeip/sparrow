@@ -10,7 +10,6 @@ import (
 
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
-	"google.golang.org/protobuf/proto"
 	"sparrow/logger"
 	"sparrow/registry"
 )
@@ -97,58 +96,47 @@ func (s *server) BuildRoutes() {
 	routes := s.serviceRegistry.BuildRoutes()
 	for route, method := range routes {
 		httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			stream := NewBidiStream(method.CallType, method.NewInput)
+			stream.SetWriter(&Http2ResponseWriter{Writer: w})
+			stream.SetReader(r.Body)
+			defer stream.Close()
 			switch method.CallType {
-			case CallUnary:
-				// 读取请求数据
-				data, err := io.ReadAll(r.Body)
+			case CallType_Request:
+				input, err := stream.Recv()
 				if err != nil {
-					s.rpcHandleError(w, err)
+					_ = stream.SendResponse(nil, WrapError(err))
 					return
 				}
-
-				// 序列化请求数据
-				var input = method.NewInput().(proto.Message)
-				if err = proto.Unmarshal(data, input); err != nil {
-					s.rpcHandleError(w, err)
-					return
-				}
-				// 调用invoker链
 				method.Invoker.Invoke(r.Context(), &Request{
 					Method: method,
 					Input:  input,
 				}, func(rsp *Response) {
-					// 这里需要区分一下, 这里应该属于业务错误
-					if rsp.Error != nil {
-						s.rpcHandleError(w, rsp.Error)
-						return
-					}
-
-					// 写入响应结果
-					rBytes, err := proto.Marshal(rsp.Message)
-					if err != nil {
-						s.rpcHandleError(w, err)
-						return
-					}
-
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write(rBytes)
+					_ = stream.SendResponse(rsp.Message, rsp.Error)
 				})
-			case CallBidiStream:
+			case CallType_BidiStream:
 				method.Invoker.Invoke(r.Context(), &Request{
 					Method: method,
 					Input:  nil,
-					Reader: r.Body,
-					Writer: &Http2ResponseWriter{Writer: w},
+					Stream: stream,
 				}, func(rsp *Response) {
 					// 这里需要区分一下, 这里应该属于业务错误
-					if rsp.Error != nil {
-						s.rpcHandleError(w, rsp.Error)
-						return
-					}
-					w.WriteHeader(http.StatusOK)
+					_ = stream.SendResponse(rsp.Message, rsp.Error)
+				})
+			case CallType_ServerStream:
+				input, err := stream.Recv()
+				if err != nil {
+					_ = stream.SendResponse(nil, WrapError(err))
+					return
+				}
+				method.Invoker.Invoke(r.Context(), &Request{
+					Method: method,
+					Input:  input,
+					Stream: stream,
+				}, func(rsp *Response) {
+					// 这里需要区分一下, 这里应该属于业务错误
+					_ = stream.SendResponse(rsp.Message, rsp.Error)
 				})
 			}
-
 		})
 		s.mux.Handle(route, httpHandler)
 	}

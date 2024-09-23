@@ -23,6 +23,8 @@ service EchoService {
   rpc Echo(EchoRequest) returns (EchoResponse);
   rpc Incr(IncrRequest) returns (IncrResponse);
   rpc Pubsub(stream PubsubArgs) returns (stream PubsubReply);
+  rpc ClientStream(stream ClientStreamArgs) returns (ClientStreamReply);
+  rpc ServerStream(ServerStreamArgs) returns(stream ServerStreamReply);
 }
 
 message PubsubArgs {
@@ -31,4 +33,20 @@ message PubsubArgs {
 
 message PubsubReply {
   string data = 1;
+}
+
+message ClientStreamArgs {
+  string value = 1;
+}
+
+message ClientStreamReply {
+  string value = 1;
+}
+
+message ServerStreamArgs {
+  string value = 1;
+}
+
+message ServerStreamReply {
+  string value = 1;
 }

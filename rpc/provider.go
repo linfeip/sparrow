@@ -2,7 +2,6 @@ package rpc
 
 import (
 	"context"
-	"io"
 	"sync"
 	"time"
 
@@ -13,8 +12,7 @@ import (
 type Request struct {
 	Method *MethodInfo
 	Input  any
-	Reader io.ReadCloser
-	Writer io.Writer
+	Stream *BidiStream
 }
 
 func WrapService(serviceInfo *ServiceInfo, invoker Invoker) ServiceInvoker {

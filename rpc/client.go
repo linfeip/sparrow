@@ -1,7 +1,6 @@
 package rpc
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -37,7 +36,7 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 		return nil, errors.New("invoker is required")
 	}
 
-	client.invoker = client.middleware.Build(client.invoker)
+	client.invoker = client.middleware.Build(client.invoker).(ClientInvoker)
 
 	return client, nil
 }
@@ -45,7 +44,7 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 type ClientOptions struct {
 	discover registry.Discover
 	addr     string
-	invoker  Invoker
+	invoker  ClientInvoker
 }
 
 type ClientOption func(*ClientOptions)
@@ -62,7 +61,7 @@ func WithClientAddr(addr string) ClientOption {
 	}
 }
 
-func WithClientInvoker(invoker Invoker) ClientOption {
+func WithClientInvoker(invoker ClientInvoker) ClientOption {
 	return func(opts *ClientOptions) {
 		opts.invoker = invoker
 	}
@@ -77,12 +76,11 @@ type Client struct {
 func (c *Client) AddLast(interceptors ...Interceptor) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.middleware.AddLast(interceptors...)
-	c.invoker = c.middleware.Build(c.invoker)
+	//c.middleware.AddLast(interceptors...)
+	//c.invoker = c.middleware.Build(c.invoker).(ClientInvoker)
 }
 
 func (c *Client) Invoke(ctx context.Context, req *Request, callback CallbackFunc) {
-	// TODO: client的invoker从外部传入， 可以实现不同的invoker， 比如http2Invoker， tcpInvoker。。。
 	addr := c.addr
 	if len(addr) == 0 {
 		// 判断是否引入了注册中心
@@ -97,7 +95,11 @@ func (c *Client) Invoke(ctx context.Context, req *Request, callback CallbackFunc
 	c.invoker.Invoke(ctx, req, callback)
 }
 
-func NewH2ClientInvoker() Invoker {
+func (c *Client) OpenStream(ctx context.Context, req *Request) (*BidiStream, error) {
+	return c.invoker.OpenStream(ctx, req)
+}
+
+func NewH2ClientInvoker() ClientInvoker {
 	httpClient := &http.Client{
 		Transport: &http2.Transport{
 			AllowHTTP: true,
@@ -115,50 +117,51 @@ type H2ClientInvoker struct {
 	client *http.Client
 }
 
-func (h *H2ClientInvoker) Invoke(ctx context.Context, req *Request, callback CallbackFunc) {
-	addr := ctx.Value(KeySelectedAddr).(string)
-	var data []byte
-	var err error
-	switch input := req.Input.(type) {
-	case proto.Message:
-		data, err = proto.Marshal(input)
-		if err != nil {
-			callback(&Response{
-				Error: WrapError(err),
-			})
-			return
-		}
-	case []byte:
-		data = input
-	default:
-		callback(&Response{
-			Error: WrapError(errors.New("not support input message type")),
-		})
-		return
-	}
+func (h *H2ClientInvoker) OpenStream(ctx context.Context, req *Request) (*BidiStream, error) {
+	var rspReady = make(chan struct{}, 1)
+	var rsp *http.Response
+	requestReader, requestWriter := io.Pipe()
+	stream := NewBidiStream(req.Method.CallType, req.Method.NewOutput)
+	stream.SetWriter(requestWriter)
+	stream.SetReady(rspReady)
+	//addr := ctx.Value(KeySelectedAddr).(string)
+	addr := "127.0.0.1:1230"
 	url := fmt.Sprintf("http://%s/%s/%s", addr, req.Method.ServiceName, req.Method.MethodName)
-	httpRequest, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
-	rsp, err := h.client.Do(httpRequest)
+	makeRequest := func() {
+		defer close(rspReady)
+		var httpReq *http.Request
+		var err error
+		httpReq, err = http.NewRequest("POST", url, requestReader)
+		if err != nil {
+			panic(err)
+		}
+
+		rsp, err = h.client.Do(httpReq)
+		if err != nil {
+			panic(err)
+		}
+		stream.SetReader(rsp.Body)
+	}
+	go makeRequest()
+	return stream, nil
+}
+
+func (h *H2ClientInvoker) Invoke(ctx context.Context, req *Request, callback CallbackFunc) {
+	stream, err := h.OpenStream(ctx, req)
 	if err != nil {
 		callback.Error(WrapError(err))
 		return
 	}
-	defer rsp.Body.Close()
-	if rsp.StatusCode == http.StatusOK {
-		out, err := io.ReadAll(rsp.Body)
-		if err != nil {
-			callback(&Response{
-				Error: WrapError(err),
-			})
-		}
-		output := req.Method.NewOutput().(proto.Message)
-		err = proto.Unmarshal(out, output)
-		if err != nil {
-			callback.Error(WrapError(err))
-			return
-		}
-		callback.Success(output)
-	} else {
-		callback.Error(NewError(int32(rsp.StatusCode), errors.New(rsp.Header.Get(ErrHeaderKey))))
+	defer stream.Close()
+	err = stream.Send(req.Input.(proto.Message))
+	if err != nil {
+		callback.Error(WrapError(err))
+		return
 	}
+	msg, err := stream.RecvResponse()
+	if err != nil {
+		callback.Error(WrapError(err))
+		return
+	}
+	callback.Success(msg)
 }
