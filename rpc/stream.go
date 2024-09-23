@@ -159,10 +159,10 @@ func (b *BidiStream) SendResponse(msg proto.Message, rpcErr Error) error {
 	total := uint32(len(payloadBytes))
 	totalBytes := [4]byte{}
 	binary.LittleEndian.PutUint32(totalBytes[:], total)
-
-	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
-	buffer.Write(totalBytes[:])
-	buffer.Write(payloadBytes)
-	_, werr := b.writer.Write(buffer.Bytes())
+	_, werr := b.writer.Write(totalBytes[:])
+	if werr != nil {
+		return werr
+	}
+	_, werr = b.writer.Write(payloadBytes)
 	return werr
 }
