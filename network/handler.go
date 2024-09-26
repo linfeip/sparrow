@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+
+	"sparrow/utils"
 )
 
 type Handler interface {
@@ -38,15 +40,15 @@ func (h *headHandler) HandleWrite(ctx HandlerContext, message any) {
 	conn := connection.NetConn()
 	switch v := message.(type) {
 	case []byte:
-		AssertLength(conn.Write(v))
+		utils.AssertLength(conn.Write(v))
 	case [][]byte:
 		buffer := net.Buffers(v)
 		_, err := buffer.WriteTo(conn)
-		Assert(err)
+		utils.Assert(err)
 	case io.Reader:
 		data, err := io.ReadAll(v)
-		Assert(err)
-		AssertLength(conn.Write(data))
+		utils.Assert(err)
+		utils.AssertLength(conn.Write(data))
 	default:
 		panic(fmt.Errorf("unsupported message type: %T", v))
 	}

@@ -6,6 +6,8 @@ import (
 	"io"
 	"testing"
 	"time"
+
+	"sparrow/utils"
 )
 
 func TestNetwork(t *testing.T) {
@@ -45,11 +47,11 @@ func (c *codec) HandleWrite(ctx HandlerContext, message any) {
 func (c *codec) HandleRead(ctx HandlerContext, message any) {
 	reader := message.(io.Reader)
 	var totalBytes = [4]byte{}
-	Assert(binary.Read(reader, binary.LittleEndian, &totalBytes))
+	utils.Assert(binary.Read(reader, binary.LittleEndian, &totalBytes))
 	total := binary.LittleEndian.Uint32(totalBytes[:])
 
 	buffer := make([]byte, total)
-	AssertLength(io.ReadFull(reader, buffer))
+	utils.AssertLength(io.ReadFull(reader, buffer))
 
 	ctx.HandleRead(buffer)
 }
@@ -72,7 +74,7 @@ type serverHandler struct {
 func (s *serverHandler) HandleRead(ctx HandlerContext, message any) {
 	s.n++
 	// 回写
-	Assert(s.connection.Write(message))
+	utils.Assert(s.connection.Write(message))
 	ctx.HandleRead(message)
 }
 
