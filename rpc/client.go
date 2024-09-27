@@ -13,6 +13,7 @@ import (
 	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/proto"
 	"sparrow/registry"
+	"sparrow/utils"
 )
 
 var KeySelectedAddr = "KeySelectedAddr"
@@ -142,7 +143,7 @@ func (h *H2ClientInvoker) OpenStream(ctx context.Context, req *Request) (*BidiSt
 		}
 		stream.SetReader(rsp.Body)
 	}
-	err := GoPool.Submit(makeRequest)
+	err := utils.GoPool.Submit(makeRequest)
 	if err != nil {
 		return nil, err
 	}

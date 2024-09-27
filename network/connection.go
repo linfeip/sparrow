@@ -15,7 +15,7 @@ func NewConnection(ctx context.Context, conn net.Conn, attachment any, handlers 
 		conn:       conn,
 		attachment: attachment,
 	}
-	c.head = newHandlerContext(c, &headHandler{}, nil, nil)
+	c.head = newHandlerContext(c, &headHandler{writeQ: make(chan [][]byte, 20)}, nil, nil)
 	c.tail = newHandlerContext(c, &tailHandler{}, nil, nil)
 	c.head.next = c.tail
 	c.tail.prev = c.head

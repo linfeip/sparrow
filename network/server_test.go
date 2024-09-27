@@ -10,6 +10,27 @@ import (
 	"sparrow/utils"
 )
 
+var testServer Server
+var testClient *Client
+var testConnection *Connection
+var data = []byte("HelloWorld")
+
+func init() {
+	testServer = NewServer()
+	testServer.ServeAsync("tcp://:1232", func(err error) {
+		if err != nil {
+			panic(err)
+		}
+	}, WithHandler(&codec{}))
+	time.Sleep(time.Second)
+	testClient = NewClient()
+	var err error
+	testConnection, err = testClient.Connect("tcp://127.0.0.1:1232", WithHandler(&codec{}))
+	if err != nil {
+		panic(err)
+	}
+}
+
 func TestNetwork(t *testing.T) {
 	srv := NewServer()
 	srv.ServeAsync("tcp://:1231", func(err error) {
@@ -34,7 +55,18 @@ func TestNetwork(t *testing.T) {
 	}
 }
 
+func BenchmarkEcho(b *testing.B) {
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			testConnection.Write(data)
+		}
+	})
+}
+
 type codec struct {
+	buffer []byte
 }
 
 func (c *codec) HandleWrite(ctx HandlerContext, message any) {
@@ -50,7 +82,10 @@ func (c *codec) HandleRead(ctx HandlerContext, message any) {
 	utils.Assert(binary.Read(reader, binary.LittleEndian, &totalBytes))
 	total := binary.LittleEndian.Uint32(totalBytes[:])
 
-	buffer := make([]byte, total)
+	if len(c.buffer) < int(total) {
+		c.buffer = make([]byte, int(total))
+	}
+	buffer := c.buffer[:total]
 	utils.AssertLength(io.ReadFull(reader, buffer))
 
 	ctx.HandleRead(buffer)

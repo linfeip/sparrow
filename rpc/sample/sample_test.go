@@ -55,7 +55,7 @@ func TestService(t *testing.T) {
 	echoClient := NewEchoServiceClient(client)
 	for {
 		time.Sleep(2 * time.Second)
-		result, err := echoClient.Echo(context.Background(), &EchoRequest{
+		result, err := echoClient.Echo(backCtx, &EchoRequest{
 			Message: "HelloWorld",
 		})
 		if err != nil {
@@ -300,8 +300,6 @@ func startServer(reg registry.Registry, addr string) {
 		logger.Fatal(err)
 	}
 	echoService := &service{}
-	sr := server.ServiceRegistry()
 	//sr.AddInterceptor(middleware.AccessLog())
-	sr.Register(NewEchoServiceServer(echoService))
-	server.BuildRoutes()
+	server.MustRegister(NewEchoServiceServer(echoService))
 }

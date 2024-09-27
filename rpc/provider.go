@@ -7,6 +7,7 @@ import (
 
 	"sparrow/logger"
 	"sparrow/registry"
+	"sparrow/utils"
 )
 
 type Request struct {
@@ -31,19 +32,25 @@ func (w *WrapServiceInvoker) ServiceInfo() *ServiceInfo {
 	return w.serviceInfo
 }
 
-func NewServiceRegistry(ctx context.Context, exporter string, r registry.Registry) *ServiceRegistry {
-	serviceRegistry := &ServiceRegistry{
+type ServiceRegistry interface {
+	Register(service ServiceInvoker) error
+	MustRegister(service ServiceInvoker)
+	Methods() map[string]*MethodInfo
+}
+
+func NewServiceRegistry(ctx context.Context, exporter string, r registry.Registry) ServiceRegistry {
+	sr := &serviceRegistry{
 		ctx:        ctx,
 		exporter:   exporter,
 		registry:   r,
 		services:   make(map[string]ServiceInvoker),
 		middleware: NewMiddleware(),
 	}
-	go serviceRegistry.workLoop()
-	return serviceRegistry
+	go sr.workLoop()
+	return sr
 }
 
-type ServiceRegistry struct {
+type serviceRegistry struct {
 	ctx        context.Context
 	mu         sync.RWMutex
 	services   map[string]ServiceInvoker
@@ -52,25 +59,37 @@ type ServiceRegistry struct {
 	middleware Middleware
 }
 
-func (s *ServiceRegistry) Register(service ServiceInvoker) {
+func (s *serviceRegistry) Register(invoker ServiceInvoker) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	wrapService := s.BuildService(service)
+	wrapService := s.BuildService(invoker)
 	s.services[wrapService.ServiceInfo().ServiceName] = wrapService
+	service := invoker.ServiceInfo()
+	err := s.registry.Register(service.ServiceName, s.exporter, &registry.NodeMetadata{
+		Address:    s.exporter,
+		ID:         s.exporter,
+		Weight:     1.0,
+		UpdateTime: time.Now().Unix(),
+	})
+	return err
 }
 
-func (s *ServiceRegistry) BuildService(service ServiceInvoker) ServiceInvoker {
+func (s *serviceRegistry) MustRegister(invoker ServiceInvoker) {
+	utils.Assert(s.Register(invoker))
+}
+
+func (s *serviceRegistry) BuildService(service ServiceInvoker) ServiceInvoker {
 	chain := s.middleware.Build(service)
 	return WrapService(service.ServiceInfo(), chain)
 }
 
-func (s *ServiceRegistry) AddInterceptor(interceptors ...Interceptor) {
+func (s *serviceRegistry) AddInterceptor(interceptors ...Interceptor) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.middleware.AddLast(interceptors...)
 }
 
-func (s *ServiceRegistry) BuildRoutes() map[string]*MethodInfo {
+func (s *serviceRegistry) Methods() map[string]*MethodInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	handlers := make(map[string]*MethodInfo, len(s.services))
@@ -86,7 +105,7 @@ func (s *ServiceRegistry) BuildRoutes() map[string]*MethodInfo {
 	return handlers
 }
 
-func (s *ServiceRegistry) workLoop() {
+func (s *serviceRegistry) workLoop() {
 	if s.registry == nil {
 		return
 	}
@@ -103,7 +122,7 @@ func (s *ServiceRegistry) workLoop() {
 	}
 }
 
-func (s *ServiceRegistry) doRegister() {
+func (s *serviceRegistry) doRegister() {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, serviceInvoker := range s.services {

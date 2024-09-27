@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"sparrow/utils"
 )
@@ -33,6 +34,9 @@ type CloseHandler interface {
 }
 
 type headHandler struct {
+	writeQ   chan [][]byte
+	lastTime time.Time
+	state    uint32
 }
 
 func (h *headHandler) HandleWrite(ctx HandlerContext, message any) {
@@ -45,6 +49,30 @@ func (h *headHandler) HandleWrite(ctx HandlerContext, message any) {
 		buffer := net.Buffers(v)
 		_, err := buffer.WriteTo(conn)
 		utils.Assert(err)
+		/*select {
+		case h.writeQ <- v:
+		default:
+			buffer := BytesPool.Get().(*bytes.Buffer)
+			defer func() {
+				buffer.Reset()
+				BytesPool.Put(buffer)
+			}()
+			for {
+				select {
+				case vv := <-h.writeQ:
+					for _, b := range vv {
+						buffer.Write(b)
+					}
+				default:
+					for _, b := range v {
+						buffer.Write(b)
+					}
+					_, err := buffer.WriteTo(conn)
+					utils.Assert(err)
+					return
+				}
+			}
+		}*/
 	case io.Reader:
 		data, err := io.ReadAll(v)
 		utils.Assert(err)

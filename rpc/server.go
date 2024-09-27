@@ -19,8 +19,7 @@ const ErrHeaderKey = "SparrowError"
 
 type Server interface {
 	ServeAsync() error
-	ServiceRegistry() *ServiceRegistry
-	BuildRoutes()
+	MustRegister(invoker ServiceInvoker)
 }
 
 type options struct {
@@ -61,7 +60,7 @@ func NewServer(opts ...Option) Server {
 		mux:  http.NewServeMux(),
 	}
 	srv.opts.apply(opts...)
-	srv.serviceRegistry = NewServiceRegistry(context.Background(), srv.Exporter(), srv.opts.registry)
+	srv.sr = NewServiceRegistry(context.Background(), srv.Exporter(), srv.opts.registry)
 	srv.httpSrv = &http.Server{
 		Addr:    srv.opts.addr,
 		Handler: h2c.NewHandler(srv.mux, &http2.Server{}),
@@ -70,10 +69,10 @@ func NewServer(opts ...Option) Server {
 }
 
 type server struct {
-	opts            *options
-	httpSrv         *http.Server
-	mux             *http.ServeMux
-	serviceRegistry *ServiceRegistry
+	sr      ServiceRegistry
+	opts    *options
+	httpSrv *http.Server
+	mux     *http.ServeMux
 }
 
 func (s *server) ServeAsync() error {
@@ -89,13 +88,14 @@ func (s *server) ServeAsync() error {
 	return nil
 }
 
-func (s *server) ServiceRegistry() *ServiceRegistry {
-	return s.serviceRegistry
+func (s *server) MustRegister(service ServiceInvoker) {
+	s.sr.MustRegister(service)
+	s.BuildRoutes()
 }
 
 func (s *server) BuildRoutes() {
-	routes := s.serviceRegistry.BuildRoutes()
-	for route, method := range routes {
+	methods := s.sr.Methods()
+	for route, method := range methods {
 		httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			stream := NewBidiStream(method.CallType, method.NewInput)
 			stream.SetWriter(&Http2ResponseWriter{Writer: w})

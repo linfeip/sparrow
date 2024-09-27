@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"google.golang.org/protobuf/proto"
+	"sparrow/utils"
 )
 
 func NewBidiStream(call CallType, newRecv func() proto.Message) *BidiStream {
@@ -74,11 +75,11 @@ func (b *BidiStream) Recv() (proto.Message, error) {
 	}
 
 	total := binary.LittleEndian.Uint32(totalBytes[:])
-	buffer := BufPool.Get().(*bytes.Buffer)
+	buffer := utils.ByteBufferPool.Get().(*bytes.Buffer)
 	buffer.Grow(int(total))
 	defer func() {
 		buffer.Reset()
-		BufPool.Put(buffer)
+		utils.ByteBufferPool.Put(buffer)
 	}()
 
 	_, err = io.CopyN(buffer, b.reader, int64(total))
