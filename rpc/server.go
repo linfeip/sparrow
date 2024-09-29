@@ -8,10 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
-	"google.golang.org/protobuf/proto"
-	"sparrow/logger"
+	"sparrow/network"
 	"sparrow/registry"
 )
 
@@ -57,42 +54,35 @@ type Option func(*options)
 func NewServer(opts ...Option) Server {
 	srv := &server{
 		opts: &options{},
-		mux:  http.NewServeMux(),
 	}
 	srv.opts.apply(opts...)
 	srv.sr = NewServiceRegistry(context.Background(), srv.Exporter(), srv.opts.registry)
-	srv.httpSrv = &http.Server{
-		Addr:    srv.opts.addr,
-		Handler: h2c.NewHandler(srv.mux, &http2.Server{}),
-	}
+	srv.server = network.NewServer()
 	return srv
 }
 
 type server struct {
-	sr      ServiceRegistry
-	opts    *options
-	httpSrv *http.Server
-	mux     *http.ServeMux
+	sr     ServiceRegistry
+	opts   *options
+	server network.Server
 }
 
 func (s *server) ServeAsync() error {
 	if len(s.opts.addr) == 0 {
 		return fmt.Errorf("server addr is empty")
 	}
-	s.BuildRoutes()
-	go func() {
-		if err := s.httpSrv.ListenAndServe(); err != nil {
-			logger.Errorf("addr: %s serve error: %v", s.opts.addr, err)
-		}
-	}()
+	svcHdr := &ServerHandler{ServiceRegistry: s.sr}
+	s.server.ServeAsync(s.opts.addr, func(err error) {
+		panic(err)
+	}, network.WithHandler(&Codec{}, svcHdr))
 	return nil
 }
 
 func (s *server) MustRegister(service ServiceInvoker) {
 	s.sr.MustRegister(service)
-	s.BuildRoutes()
 }
 
+/*
 func (s *server) BuildRoutes() {
 	methods := s.sr.Methods()
 	for route, method := range methods {
@@ -129,7 +119,7 @@ func (s *server) BuildRoutes() {
 		})
 		s.mux.Handle(route, httpHandler)
 	}
-}
+}*/
 
 type Http2ResponseWriter struct {
 	io.Writer

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/proto"
 	"sparrow/logger"
 	"sparrow/registry"
 	"sparrow/utils"
@@ -12,7 +13,7 @@ import (
 
 type Request struct {
 	Method *MethodInfo
-	Input  any
+	Input  proto.Message
 	Stream *BidiStream
 }
 
@@ -35,7 +36,8 @@ func (w *WrapServiceInvoker) ServiceInfo() *ServiceInfo {
 type ServiceRegistry interface {
 	Register(service ServiceInvoker) error
 	MustRegister(service ServiceInvoker)
-	Methods() map[string]*MethodInfo
+	ByService(service string) (ServiceInvoker, bool)
+	ByRoute(route string) (ServiceInvoker, bool)
 }
 
 func NewServiceRegistry(ctx context.Context, exporter string, r registry.Registry) ServiceRegistry {
@@ -44,6 +46,7 @@ func NewServiceRegistry(ctx context.Context, exporter string, r registry.Registr
 		exporter:   exporter,
 		registry:   r,
 		services:   make(map[string]ServiceInvoker),
+		routes:     make(map[string]ServiceInvoker),
 		middleware: NewMiddleware(),
 	}
 	go sr.workLoop()
@@ -57,6 +60,7 @@ type serviceRegistry struct {
 	registry   registry.Registry
 	exporter   string // 注册的地址
 	middleware Middleware
+	routes     map[string]ServiceInvoker
 }
 
 func (s *serviceRegistry) Register(invoker ServiceInvoker) error {
@@ -64,6 +68,7 @@ func (s *serviceRegistry) Register(invoker ServiceInvoker) error {
 	defer s.mu.Unlock()
 	wrapService := s.BuildService(invoker)
 	s.services[wrapService.ServiceInfo().ServiceName] = wrapService
+	s.makeRoutes(wrapService)
 	service := invoker.ServiceInfo()
 	err := s.registry.Register(service.ServiceName, s.exporter, &registry.NodeMetadata{
 		Address:    s.exporter,
@@ -72,6 +77,26 @@ func (s *serviceRegistry) Register(invoker ServiceInvoker) error {
 		UpdateTime: time.Now().Unix(),
 	})
 	return err
+}
+
+func (s *serviceRegistry) makeRoutes(invoker ServiceInvoker) {
+	for _, method := range invoker.ServiceInfo().Methods {
+		s.routes[method.Route] = invoker
+	}
+}
+
+func (s *serviceRegistry) ByService(service string) (ServiceInvoker, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	svc, ok := s.services[service]
+	return svc, ok
+}
+
+func (s *serviceRegistry) ByRoute(route string) (ServiceInvoker, bool) {
+	s.mu.RLock()
+	s.mu.RUnlock()
+	svc, ok := s.routes[route]
+	return svc, ok
 }
 
 func (s *serviceRegistry) MustRegister(invoker ServiceInvoker) {

@@ -38,11 +38,10 @@ func clientMiddleware() rpc.Interceptor {
 func init() {
 	var err error
 	reg = newRegistry()
-	startServer(reg, ":1230")
+	startServer(reg, "tcp://:1230", "192.168.218.199:1230")
 	//startServer(reg, ":1231")
 	client, err = rpc.NewClient(
 		rpc.WithClientDiscover(reg),
-		rpc.WithClientInvoker(rpc.NewH2ClientInvoker()),
 	)
 	if err != nil {
 		panic(err)
@@ -290,11 +289,11 @@ func newRegistry() registry.Registry {
 	return r
 }
 
-func startServer(reg registry.Registry, addr string) {
+func startServer(reg registry.Registry, addr, export string) {
 	server := rpc.NewServer(
 		rpc.WithAddress(addr),
 		rpc.WithRegistry(reg),
-		//rpc.WithExporter("192.168.218.199:1234"),
+		rpc.WithExporter(export),
 	)
 	if err := server.ServeAsync(); err != nil {
 		logger.Fatal(err)

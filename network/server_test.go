@@ -69,14 +69,14 @@ type codec struct {
 	buffer []byte
 }
 
-func (c *codec) HandleWrite(ctx HandlerContext, message any) {
+func (c *codec) HandleWrite(ctx WriteContext, message any) {
 	data := message.([]byte)
 	var totalBytes = [4]byte{}
 	binary.LittleEndian.PutUint32(totalBytes[:], uint32(len(data)))
 	ctx.HandleWrite([][]byte{totalBytes[:], data})
 }
 
-func (c *codec) HandleRead(ctx HandlerContext, message any) {
+func (c *codec) HandleRead(ctx ReadContext, message any) {
 	reader := message.(io.Reader)
 	var totalBytes = [4]byte{}
 	utils.Assert(binary.Read(reader, binary.LittleEndian, &totalBytes))
@@ -95,7 +95,7 @@ type logHandler struct {
 	prefix string
 }
 
-func (e *logHandler) HandleRead(ctx HandlerContext, message any) {
+func (e *logHandler) HandleRead(ctx ReadContext, message any) {
 	data := message.([]byte)
 	fmt.Printf("prefix: %s %s\n", e.prefix, string(data))
 	ctx.HandleRead(message)
@@ -106,7 +106,7 @@ type serverHandler struct {
 	n          int32
 }
 
-func (s *serverHandler) HandleRead(ctx HandlerContext, message any) {
+func (s *serverHandler) HandleRead(ctx ReadContext, message any) {
 	s.n++
 	// 回写
 	utils.Assert(s.connection.Write(message))

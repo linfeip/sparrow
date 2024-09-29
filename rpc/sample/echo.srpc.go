@@ -14,6 +14,7 @@ import (
 var EchoServiceEchoMethodInfo = &rpc.MethodInfo{
 	ServiceName: "sample.EchoService",
 	MethodName:  "Echo",
+	Route:       "/sample.EchoService/Echo",
 	CallType:    rpc.CallType_Request,
 	NewInput: func() proto.Message {
 		return &EchoRequest{}
@@ -25,6 +26,7 @@ var EchoServiceEchoMethodInfo = &rpc.MethodInfo{
 var EchoServiceIncrMethodInfo = &rpc.MethodInfo{
 	ServiceName: "sample.EchoService",
 	MethodName:  "Incr",
+	Route:       "/sample.EchoService/Incr",
 	CallType:    rpc.CallType_Request,
 	NewInput: func() proto.Message {
 		return &IncrRequest{}
@@ -37,6 +39,7 @@ var EchoServiceIncrMethodInfo = &rpc.MethodInfo{
 var EchoServicePubsubMethodInfo = &rpc.MethodInfo{
 	ServiceName: "sample.EchoService",
 	MethodName:  "Pubsub",
+	Route:       "/sample.EchoService/Pubsub",
 	CallType:    rpc.CallType_BidiStream,
 	NewInput: func() proto.Message {
 		return &PubsubArgs{}
@@ -49,6 +52,7 @@ var EchoServicePubsubMethodInfo = &rpc.MethodInfo{
 var EchoServiceClientStreamMethodInfo = &rpc.MethodInfo{
 	ServiceName: "sample.EchoService",
 	MethodName:  "ClientStream",
+	Route:       "/sample.EchoService/ClientStream",
 	CallType:    rpc.CallType_BidiStream,
 	NewInput: func() proto.Message {
 		return &ClientStreamArgs{}
@@ -61,6 +65,7 @@ var EchoServiceClientStreamMethodInfo = &rpc.MethodInfo{
 var EchoServiceServerStreamMethodInfo = &rpc.MethodInfo{
 	ServiceName: "sample.EchoService",
 	MethodName:  "ServerStream",
+	Route:       "/sample.EchoService/ServerStream",
 	CallType:    rpc.CallType_ServerStream,
 	NewInput: func() proto.Message {
 		return &ServerStreamArgs{}
@@ -72,12 +77,12 @@ var EchoServiceServerStreamMethodInfo = &rpc.MethodInfo{
 
 var EchoServiceServiceInfo = &rpc.ServiceInfo{
 	ServiceName: "sample.EchoService",
-	Methods: []*rpc.MethodInfo{
-		EchoServiceEchoMethodInfo,
-		EchoServiceIncrMethodInfo,
-		EchoServicePubsubMethodInfo,
-		EchoServiceClientStreamMethodInfo,
-		EchoServiceServerStreamMethodInfo,
+	Methods: map[string]*rpc.MethodInfo{
+		EchoServiceEchoMethodInfo.Route:         EchoServiceEchoMethodInfo,
+		EchoServiceIncrMethodInfo.Route:         EchoServiceIncrMethodInfo,
+		EchoServicePubsubMethodInfo.Route:       EchoServicePubsubMethodInfo,
+		EchoServiceClientStreamMethodInfo.Route: EchoServiceClientStreamMethodInfo,
+		EchoServiceServerStreamMethodInfo.Route: EchoServiceServerStreamMethodInfo,
 	},
 }
 
@@ -252,9 +257,12 @@ func (e *EchoServiceClient) Echo(ctx context.Context, request *EchoRequest) (*Ec
 		Input:  request,
 	}
 	var resp *rpc.Response
+	signal := make(chan struct{})
 	e.client.Invoke(ctx, rpcRequest, func(response *rpc.Response) {
+		defer close(signal)
 		resp = response
 	})
+	<-signal
 	if resp.Error != nil {
 		return nil, resp.Error
 	}

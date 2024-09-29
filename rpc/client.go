@@ -2,24 +2,19 @@ package rpc
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
-	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"sync"
 
-	"golang.org/x/net/http2"
-	"google.golang.org/protobuf/proto"
+	"sparrow/network"
 	"sparrow/registry"
-	"sparrow/utils"
 )
 
 var KeySelectedAddr = "KeySelectedAddr"
 
 func NewClient(opts ...ClientOption) (*Client, error) {
-	cliOpts := &ClientOptions{}
+	cliOpts := &ClientOptions{
+		scheme: network.TransportTCP,
+	}
 	for _, opt := range opts {
 		opt(cliOpts)
 	}
@@ -27,17 +22,12 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 	client := &Client{
 		ClientOptions: cliOpts,
 		middleware:    NewMiddleware(),
+		invokers:      make(map[string]Invoker),
 	}
 
 	if len(client.addr) != 0 && client.discover != nil {
 		return nil, errors.New("discover or addr only choice one")
 	}
-
-	if client.invoker == nil {
-		return nil, errors.New("invoker is required")
-	}
-
-	client.invoker = client.middleware.Build(client.invoker).(ClientInvoker)
 
 	return client, nil
 }
@@ -45,7 +35,7 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 type ClientOptions struct {
 	discover registry.Discover
 	addr     string
-	invoker  ClientInvoker
+	scheme   string
 }
 
 type ClientOption func(*ClientOptions)
@@ -62,110 +52,90 @@ func WithClientAddr(addr string) ClientOption {
 	}
 }
 
-func WithClientInvoker(invoker ClientInvoker) ClientOption {
+func WithScheme(scheme string) ClientOption {
 	return func(opts *ClientOptions) {
-		opts.invoker = invoker
+		opts.scheme = scheme
 	}
 }
 
 type Client struct {
 	*ClientOptions
-	mu         sync.Mutex
+	rw         sync.RWMutex
 	middleware Middleware
+	invokers   map[string]Invoker
+	client     *network.Client
 }
 
 func (c *Client) AddLast(interceptors ...Interceptor) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.rw.Lock()
+	defer c.rw.Unlock()
 	//c.middleware.AddLast(interceptors...)
 	//c.invoker = c.middleware.Build(c.invoker).(ClientInvoker)
 }
 
 func (c *Client) Invoke(ctx context.Context, req *Request, callback CallbackFunc) {
+	invoker, err := c.selectInvoker(ctx, req)
+	if err != nil {
+		callback(&Response{Error: WrapError(err)})
+		return
+	}
+	invoker.Invoke(ctx, req, callback)
+}
+
+func (c *Client) selectInvoker(ctx context.Context, req *Request) (Invoker, error) {
 	addr := c.addr
 	if len(addr) == 0 {
 		// 判断是否引入了注册中心
 		node, err := c.discover.Select(ctx, req.Method.ServiceName)
 		if err != nil {
-			callback.Error(WrapError(err))
-			return
+			return nil, err
 		}
 		addr = node.Address
 	}
-	ctx = context.WithValue(ctx, KeySelectedAddr, addr)
-	c.invoker.Invoke(ctx, req, callback)
-}
 
-func (c *Client) OpenStream(ctx context.Context, req *Request) (*BidiStream, error) {
-	return c.invoker.OpenStream(ctx, req)
-}
+	addr = c.scheme + "://" + addr
 
-func NewH2ClientInvoker() ClientInvoker {
-	httpClient := &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(_ context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				return net.Dial(network, addr)
-			},
-		},
+	var invoker Invoker
+	c.rw.RLock()
+	invoker = c.invokers[addr]
+	if invoker != nil {
+		c.rw.RUnlock()
+		return invoker, nil
 	}
-	return &H2ClientInvoker{
-		client: httpClient,
+	c.rw.RUnlock()
+	c.rw.Lock()
+	defer c.rw.Unlock()
+
+	// double check
+	invoker = c.invokers[addr]
+	if invoker != nil {
+		return invoker, nil
 	}
-}
 
-type H2ClientInvoker struct {
-	client *http.Client
-}
-
-func (h *H2ClientInvoker) OpenStream(ctx context.Context, req *Request) (*BidiStream, error) {
-	var rspReady = make(chan struct{}, 1)
-	var rsp *http.Response
-	requestReader, requestWriter := io.Pipe()
-	stream := NewBidiStream(req.Method.CallType, req.Method.NewOutput)
-	stream.SetWriter(requestWriter)
-	stream.SetReady(rspReady)
-	//addr := ctx.Value(KeySelectedAddr).(string)
-	addr := "127.0.0.1:1230"
-	url := fmt.Sprintf("http://%s/%s/%s", addr, req.Method.ServiceName, req.Method.MethodName)
-	makeRequest := func() {
-		defer close(rspReady)
-		var httpReq *http.Request
-		var err error
-		httpReq, err = http.NewRequest("POST", url, requestReader)
-		if err != nil {
-			panic(err)
-		}
-
-		rsp, err = h.client.Do(httpReq)
-		if err != nil {
-			panic(err)
-		}
-		stream.SetReader(rsp.Body)
-	}
-	err := utils.GoPool.Submit(makeRequest)
+	connection, err := c.client.Connect(addr, network.WithHandler(&Codec{}, &ClientHandler{}))
 	if err != nil {
 		return nil, err
 	}
-	return stream, nil
+
+	inv := &clientInvoker{connection: connection}
+	c.invokers[addr] = inv
+	return inv, nil
 }
 
-func (h *H2ClientInvoker) Invoke(ctx context.Context, req *Request, callback CallbackFunc) {
-	stream, err := h.OpenStream(ctx, req)
-	if err != nil {
-		callback.Error(WrapError(err))
-		return
-	}
-	defer stream.Close()
-	err = stream.Send(req.Input.(proto.Message))
-	if err != nil {
-		callback.Error(WrapError(err))
-		return
-	}
-	msg, err := stream.RecvResponse()
-	if err != nil {
-		callback.Error(WrapError(err))
-		return
-	}
-	callback.Success(msg)
+func (c *Client) OpenStream(ctx context.Context, req *Request) (*BidiStream, error) {
+	panic("implement me")
+}
+
+type clientInvoker struct {
+	connection *network.Connection
+	nextId     uint64
+}
+
+func (x *clientInvoker) Invoke(ctx context.Context, req *Request, callback CallbackFunc) {
+	x.connection.Write(&PendingRequest{Request: req, Handler: callback})
+}
+
+func (x *clientInvoker) OpenStream(ctx context.Context, req *Request) (*BidiStream, error) {
+	//TODO implement me
+	panic("implement me")
 }

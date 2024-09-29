@@ -100,11 +100,11 @@ func (b *BidiStream) Recv() (proto.Message, error) {
 	}
 
 	if payload.Type == CallType_Response {
-		if payload.GetErrCode() == 0 {
+		if payload.GetError() != nil {
 			b.rspMsg = msg
 			return nil, io.EOF
 		}
-		b.rspErr = NewError(payload.GetErrCode(), errors.New(payload.GetErrMsg()))
+		b.rspErr = NewError(payload.GetError().GetErrCode(), errors.New(payload.GetError().GetErrMsg()))
 		return nil, b.rspErr
 	}
 
@@ -154,8 +154,10 @@ func (b *BidiStream) SendResponse(msg proto.Message, rpcErr Error) error {
 	}
 
 	if rpcErr != nil {
-		payload.ErrCode = rpcErr.Code()
-		payload.ErrMsg = rpcErr.Error()
+		payload.Error = &ProtoError{
+			ErrCode: rpcErr.Code(),
+			ErrMsg:  rpcErr.Error(),
+		}
 	}
 
 	payloadBytes, perr := proto.Marshal(payload)

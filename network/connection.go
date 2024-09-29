@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"sync/atomic"
+
+	"sparrow/utils"
 )
 
 func NewConnection(ctx context.Context, conn net.Conn, attachment any, handlers ...Handler) *Connection {
@@ -75,7 +77,7 @@ func (c *Connection) fireHandleRead() {
 	c.head.HandleRead(c.conn)
 }
 
-func (c *Connection) Write(message any) error {
+func (c *Connection) Write(message any) {
 	defer func() {
 		if err := recover(); err != nil {
 			switch e := err.(type) {
@@ -88,11 +90,10 @@ func (c *Connection) Write(message any) error {
 	}()
 	select {
 	case <-c.ctx.Done():
-		return c.ctx.Err()
+		utils.Assert(c.ctx.Err())
 	default:
 		c.tail.HandleWrite(message)
 	}
-	return nil
 }
 
 func (c *Connection) NetConn() net.Conn {

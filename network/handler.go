@@ -14,11 +14,11 @@ type Handler interface {
 }
 
 type ReadHandler interface {
-	HandleRead(ctx HandlerContext, message any)
+	HandleRead(ctx ReadContext, message any)
 }
 
 type WriteHandler interface {
-	HandleWrite(ctx HandlerContext, message any)
+	HandleWrite(ctx WriteContext, message any)
 }
 
 type ErrorHandler interface {
@@ -39,7 +39,7 @@ type headHandler struct {
 	state    uint32
 }
 
-func (h *headHandler) HandleWrite(ctx HandlerContext, message any) {
+func (h *headHandler) HandleWrite(ctx WriteContext, message any) {
 	connection := ctx.Connection()
 	conn := connection.NetConn()
 	switch v := message.(type) {
@@ -52,10 +52,10 @@ func (h *headHandler) HandleWrite(ctx HandlerContext, message any) {
 		/*select {
 		case h.writeQ <- v:
 		default:
-			buffer := BytesPool.Get().(*bytes.Buffer)
+			buffer := utils.ByteBufferPool.Get().(*bytes.Buffer)
 			defer func() {
 				buffer.Reset()
-				BytesPool.Put(buffer)
+				utils.ByteBufferPool.Put(buffer)
 			}()
 			for {
 				select {
@@ -93,6 +93,18 @@ type HandlerContext interface {
 	context.Context
 	Connection() *Connection
 	HandleRead(message any)
+	HandleWrite(message any)
+}
+
+type ReadContext interface {
+	context.Context
+	Connection() *Connection
+	HandleRead(message any)
+}
+
+type WriteContext interface {
+	context.Context
+	Connection() *Connection
 	HandleWrite(message any)
 }
 

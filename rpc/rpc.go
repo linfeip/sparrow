@@ -47,12 +47,13 @@ func WrapError(err error) Error {
 
 type ServiceInfo struct {
 	ServiceName string
-	Methods     []*MethodInfo
+	Methods     map[string]*MethodInfo
 }
 
 type MethodInfo struct {
 	NewInput    func() proto.Message
 	NewOutput   func() proto.Message
+	Route       string
 	ServiceName string
 	MethodName  string
 	CallType    CallType

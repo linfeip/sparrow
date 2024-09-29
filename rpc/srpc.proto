@@ -15,56 +15,20 @@ enum CallType {
 
 message ProtoPayload {
   CallType type = 1;
-  uint64 requestId = 2;
+  uint64 streamId = 2;
   string route = 3;
   int32 serializeType = 4;
   bytes data = 5;
+  ProtoError error = 6;
+  repeated Header header = 7;
+}
+
+message ProtoError {
   int32 errCode = 6;
   string errMsg = 7;
-  string stackTrace = 8;
-  repeated Header header = 9;
 }
 
 message Header {
   string key = 1;
   string value = 2;
-}
-
-message ProtoRequest {
-  uint64 requestId = 1;
-  string route = 2;
-  int32 serializeType = 3;
-  bytes data = 4;
-  repeated Header header = 5;
-}
-
-message ProtoResponse {
-  uint64 requestId = 1;
-  ProtoError error = 2;
-  bytes data = 3;
-}
-
-message ProtoError {
-  int32 errCode = 1;
-  string errMsg = 2;
-  string stackTrace = 3;
-}
-
-message ProtoStream {
-  StreamCmd cmd = 1;
-  int32 window = 2;
-  int64 streamId = 3;
-  ProtoError error = 4;
-  string route = 5;
-  int32 serializeType = 6;
-  bytes data = 7;
-  repeated Header header = 8;
-}
-
-enum StreamCmd {
-  SYN = 0;
-  ACK = 1;
-  PSH = 2;
-  WND = 3;
-  FIN = 4;
 }
