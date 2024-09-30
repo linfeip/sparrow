@@ -6,6 +6,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 	"sparrow/network"
+	"sparrow/utils"
 )
 
 type ServerHandler struct {
@@ -85,7 +86,9 @@ func (c *ClientHandler) HandleRead(ctx network.ReadContext, message any) {
 		return
 	}
 	rsp.Message = out
-	pending.Handler(rsp)
+	_ = utils.GoPool.Submit(func() {
+		pending.Handler(rsp)
+	})
 }
 
 func (c *ClientHandler) HandleWrite(ctx network.WriteContext, message any) {

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,17 +53,26 @@ func init() {
 
 func TestService(t *testing.T) {
 	echoClient := NewEchoServiceClient(client)
-	for {
-		time.Sleep(2 * time.Second)
-		result, err := echoClient.Echo(backCtx, &EchoRequest{
-			Message: "HelloWorld",
-		})
-		if err != nil {
-			logger.Errorf("request echo error: %v", err)
-			continue
-		}
-		logger.Debugf("client send Echo reply: %s", result.Message)
+
+	var num = 10
+	var wg sync.WaitGroup
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		i := i
+		go func() {
+			defer wg.Done()
+			result, err := echoClient.Echo(backCtx, &EchoRequest{
+				Message: fmt.Sprintf("HelloWorld_%d", i),
+			})
+			if err != nil {
+				logger.Errorf("request echo error: %v", err)
+				return
+			}
+			logger.Debugf("client: %d send Echo reply: %s", i, result.Message)
+		}()
 	}
+
+	wg.Wait()
 }
 
 func TestStreamService(t *testing.T) {

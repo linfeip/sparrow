@@ -12,6 +12,7 @@ import (
 )
 
 var grpcServer *grpc.Server
+var echoClient EchoServiceClient
 
 func init() {
 	grpcServer = grpc.NewServer()
@@ -26,6 +27,12 @@ func init() {
 			panic(err)
 		}
 	}()
+
+	conn, err := grpc.NewClient("127.0.0.1:1222", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		panic(err)
+	}
+	echoClient = NewEchoServiceClient(conn)
 }
 
 type testGrpcEchoService struct {
@@ -43,17 +50,12 @@ func (t *testGrpcEchoService) Incr(ctx context.Context, request *IncrRequest) (*
 }
 
 func BenchmarkGrpcService(b *testing.B) {
-	conn, err := grpc.NewClient("127.0.0.1:1222", grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
-	grpcClient := NewEchoServiceClient(conn)
+
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, err := grpcClient.Echo(context.Background(), &EchoRequest{
+			_, err := echoClient.Echo(context.Background(), &EchoRequest{
 				Message: "HelloWorld",
 			})
 			if err != nil {

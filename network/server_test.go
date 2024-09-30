@@ -47,10 +47,7 @@ func TestNetwork(t *testing.T) {
 	}
 
 	for {
-		err = connection.Write([]byte("HelloWorld"))
-		if err != nil {
-			panic(err)
-		}
+		connection.Write([]byte("HelloWorld"))
 		time.Sleep(time.Second)
 	}
 }
@@ -109,7 +106,7 @@ type serverHandler struct {
 func (s *serverHandler) HandleRead(ctx ReadContext, message any) {
 	s.n++
 	// 回写
-	utils.Assert(s.connection.Write(message))
+	s.connection.Write(message)
 	ctx.HandleRead(message)
 }
 
