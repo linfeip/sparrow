@@ -161,7 +161,7 @@ type echoServiceServerClientStream struct {
 }
 
 func (e *echoServiceServerClientStream) Recv() (*ClientStreamArgs, error) {
-	msg, err := e.stream.Recv()
+	msg, err := e.stream.Recv(EchoServiceClientStreamMethodInfo.NewInput)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +182,7 @@ func (e *EchoServicePubsubServer) Send(reply *PubsubReply) error {
 }
 
 func (e *EchoServicePubsubServer) Recv() (*PubsubArgs, error) {
-	reply, err := e.stream.Recv()
+	reply, err := e.stream.Recv(EchoServicePubsubMethodInfo.NewInput)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +206,7 @@ type echoServiceServerStream struct {
 }
 
 func (e *echoServiceServerStream) Recv() (*ServerStreamReply, error) {
-	msg, err := e.stream.Recv()
+	msg, err := e.stream.Recv(EchoServiceServerStreamMethodInfo.NewOutput)
 	if err != nil {
 		return nil, err
 	}
@@ -227,9 +227,7 @@ func (e *echoServiceClientStream) Send(args *ClientStreamArgs) error {
 }
 
 func (e *echoServiceClientStream) CloseAndRecv() (*ClientStreamReply, error) {
-	e.stream.CloseWriter()
-	defer e.stream.CloseReader()
-	msg, err := e.stream.RecvResponse()
+	msg, err := e.stream.CloseAndRecv()
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +329,7 @@ func (e *EchoServicePubsubClient) Send(args *PubsubArgs) error {
 }
 
 func (e *EchoServicePubsubClient) Recv() (*PubsubReply, error) {
-	reply, err := e.stream.Recv()
+	reply, err := e.stream.Recv(EchoServicePubsubMethodInfo.NewOutput)
 	if err != nil {
 		return nil, err
 	}

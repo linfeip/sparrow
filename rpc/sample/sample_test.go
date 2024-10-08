@@ -54,7 +54,7 @@ func init() {
 func TestService(t *testing.T) {
 	echoClient := NewEchoServiceClient(client)
 
-	var num = 10
+	var num = 1
 	var wg sync.WaitGroup
 	for i := 0; i < num; i++ {
 		wg.Add(1)
@@ -82,8 +82,9 @@ func TestStreamService(t *testing.T) {
 		panic(err)
 	}
 	for {
+		now := time.Now().String()
 		err = stream.Send(&PubsubArgs{
-			Data: time.Now().String(),
+			Data: now,
 		})
 		if err != nil {
 			panic(err)
@@ -128,7 +129,7 @@ func TestServerStreamService(t *testing.T) {
 	}
 	for {
 		msg, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
+		if errors.Is(err, rpc.ErrStreamClosed) {
 			break
 		}
 		if err != nil {

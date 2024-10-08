@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
+
+	"sparrow/rpc"
 )
 
 type service struct {
@@ -39,7 +40,7 @@ func (s *service) ClientStream(ctx context.Context, stream EchoServiceServerClie
 	var values []string
 	for {
 		args, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
+		if errors.Is(err, rpc.ErrStreamClosed) {
 			break
 		}
 		if err != nil {

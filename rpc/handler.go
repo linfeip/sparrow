@@ -1,16 +1,25 @@
 package rpc
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 
 	"google.golang.org/protobuf/proto"
+	"sparrow/logger"
 	"sparrow/network"
 	"sparrow/utils"
 )
 
 type ServerHandler struct {
 	ServiceRegistry ServiceRegistry
+	rw              sync.RWMutex
+	streams         map[uint64]*BidiStream
+}
+
+func (s *ServerHandler) HandleError(ctx network.HandlerContext, err error) {
+	logger.Errorf("server handle error: %v", err)
+	ctx.HandleError(err)
 }
 
 func (s *ServerHandler) HandleRead(ctx network.ReadContext, message any) {
@@ -22,21 +31,64 @@ func (s *ServerHandler) HandleRead(ctx network.ReadContext, message any) {
 	}
 
 	method := invoker.ServiceInfo().Methods[payload.Route]
-	input := method.NewInput()
-	err := proto.Unmarshal(payload.GetData(), input)
-	if err != nil {
-		ctx.Connection().Write(ToResponsePayload(payload.StreamId, &Response{
-			Error: WrapError(err),
-		}))
+	stream, exists := s.openStream(ctx.Connection(), payload.StreamId, method)
+
+	if payload.GetType() == CallType_StreamClosed {
+		stream.Close()
 		return
 	}
 
-	invoker.Invoke(ctx, &Request{
+	stream.Push(payload)
+
+	if exists {
+		return
+	}
+
+	request := &Request{
 		Method: method,
-		Input:  input,
-	}, func(response *Response) {
-		ctx.Connection().Write(ToResponsePayload(payload.GetStreamId(), response))
+		Stream: stream,
+	}
+
+	switch payload.GetType() {
+	case CallType_Request, CallType_ServerStream:
+		input, err := stream.Recv(method.NewInput)
+		utils.Assert(err)
+		request.Input = input
+	}
+
+	_ = utils.GoPool.Submit(func() {
+		invoker.Invoke(ctx, request, func(response *Response) {
+			ctx.Connection().Write(ToResponsePayload(payload.GetStreamId(), response))
+			s.closeStream(stream)
+		})
 	})
+}
+
+func (s *ServerHandler) openStream(conn *network.Connection, streamId uint64, method *MethodInfo) (*BidiStream, bool) {
+	s.rw.RLock()
+	if stream, ok := s.streams[streamId]; ok {
+		defer s.rw.RUnlock()
+		return stream, true
+	}
+	s.rw.RUnlock()
+
+	s.rw.Lock()
+	defer s.rw.Unlock()
+	// double check
+	if stream, ok := s.streams[streamId]; ok {
+		return stream, true
+	}
+
+	stream := NewBidiStream(StreamSideServer, conn, streamId, method)
+	s.streams[streamId] = stream
+	return stream, false
+}
+
+func (s *ServerHandler) closeStream(stream *BidiStream) {
+	s.rw.Lock()
+	defer s.rw.Unlock()
+	stream.Close()
+	delete(s.streams, stream.streamId)
 }
 
 func ToResponsePayload(id uint64, response *Response) *ProtoPayload {
@@ -64,51 +116,55 @@ func ToResponsePayload(id uint64, response *Response) *ProtoPayload {
 }
 
 type ClientHandler struct {
-	ctx      network.HandlerContext
-	nextId   uint64
-	pendings sync.Map
+	conn    *network.Connection
+	nextId  uint64
+	streams map[uint64]*BidiStream
+	rw      sync.RWMutex
 }
 
 func (c *ClientHandler) HandleRead(ctx network.ReadContext, message any) {
 	payload := message.(*ProtoPayload)
-	v, ok := c.pendings.Load(payload.StreamId)
-	if !ok {
-		// ignore
-		return
+	c.rw.RLock()
+	if stream, ok := c.streams[payload.GetStreamId()]; ok {
+		if payload.GetType() == CallType_StreamClosed {
+			stream.Close()
+			return
+		}
+
+		if payload.GetType() == CallType_Response {
+			stream.RecvResp(payload)
+			return
+		}
+
+		_ = utils.GoPool.Submit(func() {
+			stream.Push(payload)
+		})
 	}
-	pending := v.(*PendingRequest)
-	var out = pending.Request.Method.NewOutput()
-	err := proto.Unmarshal(payload.GetData(), out)
-	var rsp = &Response{}
-	if err != nil {
-		rsp.Error = WrapError(err)
-		pending.Handler(rsp)
-		return
-	}
-	rsp.Message = out
-	_ = utils.GoPool.Submit(func() {
-		pending.Handler(rsp)
-	})
+	c.rw.RUnlock()
+	ctx.HandleRead(message)
 }
 
 func (c *ClientHandler) HandleWrite(ctx network.WriteContext, message any) {
-	pending := message.(*PendingRequest)
-	data, err := proto.Marshal(pending.Request.Input)
-	if err != nil {
-		pending.Handler(&Response{Error: WrapError(err)})
-		return
-	}
-	payload := &ProtoPayload{
-		Type:     CallType_Request,
-		StreamId: atomic.AddUint64(&c.nextId, 1),
-		Route:    pending.Request.Method.Route,
-		Data:     data,
-	}
-	c.pendings.Store(payload.StreamId, pending)
-	ctx.HandleWrite(payload)
+	ctx.HandleWrite(message)
 }
 
-type PendingRequest struct {
-	Request *Request
-	Handler CallbackFunc
+func (c *ClientHandler) OpenStream(ctx context.Context, req *Request) (*BidiStream, error) {
+	c.rw.RLock()
+	streamId := atomic.AddUint64(&c.nextId, 1)
+	if stream, ok := c.streams[streamId]; ok {
+		defer c.rw.RUnlock()
+		return stream, nil
+	}
+	c.rw.RUnlock()
+
+	c.rw.Lock()
+	defer c.rw.Unlock()
+	// double check
+	if stream, ok := c.streams[streamId]; ok {
+		return stream, nil
+	}
+
+	stream := NewBidiStream(StreamSideClient, c.conn, streamId, req.Method)
+	c.streams[streamId] = stream
+	return stream, nil
 }

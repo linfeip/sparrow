@@ -22,7 +22,7 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 	client := &Client{
 		ClientOptions: cliOpts,
 		middleware:    NewMiddleware(),
-		invokers:      make(map[string]Invoker),
+		invokers:      make(map[string]ClientInvoker),
 	}
 
 	if len(client.addr) != 0 && client.discover != nil {
@@ -62,7 +62,7 @@ type Client struct {
 	*ClientOptions
 	rw         sync.RWMutex
 	middleware Middleware
-	invokers   map[string]Invoker
+	invokers   map[string]ClientInvoker
 	client     *network.Client
 }
 
@@ -82,7 +82,7 @@ func (c *Client) Invoke(ctx context.Context, req *Request, callback CallbackFunc
 	invoker.Invoke(ctx, req, callback)
 }
 
-func (c *Client) selectInvoker(ctx context.Context, req *Request) (Invoker, error) {
+func (c *Client) selectInvoker(ctx context.Context, req *Request) (ClientInvoker, error) {
 	addr := c.addr
 	if len(addr) == 0 {
 		// 判断是否引入了注册中心
@@ -95,7 +95,7 @@ func (c *Client) selectInvoker(ctx context.Context, req *Request) (Invoker, erro
 
 	addr = c.scheme + "://" + addr
 
-	var invoker Invoker
+	var invoker ClientInvoker
 	c.rw.RLock()
 	invoker = c.invokers[addr]
 	if invoker != nil {
@@ -103,6 +103,7 @@ func (c *Client) selectInvoker(ctx context.Context, req *Request) (Invoker, erro
 		return invoker, nil
 	}
 	c.rw.RUnlock()
+
 	c.rw.Lock()
 	defer c.rw.Unlock()
 
@@ -112,30 +113,42 @@ func (c *Client) selectInvoker(ctx context.Context, req *Request) (Invoker, erro
 		return invoker, nil
 	}
 
-	connection, err := c.client.Connect(addr, network.WithHandler(&Codec{}, &ClientHandler{}))
+	cliHandler := &ClientHandler{streams: make(map[uint64]*BidiStream)}
+	conn, err := c.client.Connect(addr, network.WithHandler(&Codec{}, cliHandler))
 	if err != nil {
 		return nil, err
 	}
-
-	inv := &clientInvoker{connection: connection}
+	cliHandler.conn = conn
+	inv := &clientInvoker{clientHandler: cliHandler}
 	c.invokers[addr] = inv
 	return inv, nil
 }
 
 func (c *Client) OpenStream(ctx context.Context, req *Request) (*BidiStream, error) {
-	panic("implement me")
+	invoker, err := c.selectInvoker(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return invoker.OpenStream(ctx, req)
 }
 
 type clientInvoker struct {
-	connection *network.Connection
-	nextId     uint64
+	clientHandler *ClientHandler
 }
 
 func (x *clientInvoker) Invoke(ctx context.Context, req *Request, callback CallbackFunc) {
-	x.connection.Write(&PendingRequest{Request: req, Handler: callback})
+	stream, _ := x.OpenStream(ctx, req)
+	defer stream.Close()
+
+	err := stream.Send(req.Input)
+	if err != nil {
+		callback(&Response{Error: WrapError(err)})
+		return
+	}
+	rsp, rErr := stream.Recv(req.Method.NewOutput)
+	callback(&Response{Message: rsp, Error: rErr})
 }
 
 func (x *clientInvoker) OpenStream(ctx context.Context, req *Request) (*BidiStream, error) {
-	//TODO implement me
-	panic("implement me")
+	return x.clientHandler.OpenStream(ctx, req)
 }

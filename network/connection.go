@@ -40,12 +40,15 @@ type Connection struct {
 func (c *Connection) Serve() {
 	defer func() {
 		if err := recover(); err != nil {
+			var xErr error
 			switch e := err.(type) {
 			case error:
-				c.Close(e)
+				xErr = e
 			default:
-				c.Close(fmt.Errorf("%v", e))
+				xErr = fmt.Errorf("%v", e)
 			}
+			c.HandleError(xErr)
+			c.Close(xErr)
 		} else {
 			c.Close(nil)
 		}
@@ -69,6 +72,10 @@ func (c *Connection) Close(err error) {
 	}
 }
 
+func (c *Connection) HandleError(err error) {
+	c.head.HandleError(err)
+}
+
 func (c *Connection) Context() context.Context {
 	return c.ctx
 }
@@ -80,12 +87,15 @@ func (c *Connection) fireHandleRead() {
 func (c *Connection) Write(message any) {
 	defer func() {
 		if err := recover(); err != nil {
+			var xErr error
 			switch e := err.(type) {
 			case error:
-				c.Close(e)
+				xErr = e
 			default:
-				c.Close(fmt.Errorf("%v", e))
+				xErr = fmt.Errorf("%v", e)
 			}
+			c.HandleError(xErr)
+			c.Close(xErr)
 		}
 	}()
 	select {

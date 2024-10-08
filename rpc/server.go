@@ -3,16 +3,12 @@ package rpc
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"strings"
 
 	"sparrow/network"
 	"sparrow/registry"
 )
-
-const ErrHeaderKey = "SparrowError"
 
 type Server interface {
 	ServeAsync() error
@@ -71,7 +67,7 @@ func (s *server) ServeAsync() error {
 	if len(s.opts.addr) == 0 {
 		return fmt.Errorf("server addr is empty")
 	}
-	svcHdr := &ServerHandler{ServiceRegistry: s.sr}
+	svcHdr := &ServerHandler{ServiceRegistry: s.sr, streams: make(map[uint64]*BidiStream)}
 	s.server.ServeAsync(s.opts.addr, func(err error) {
 		panic(err)
 	}, network.WithHandler(&Codec{}, svcHdr))
@@ -80,71 +76,6 @@ func (s *server) ServeAsync() error {
 
 func (s *server) MustRegister(service ServiceInvoker) {
 	s.sr.MustRegister(service)
-}
-
-/*
-func (s *server) BuildRoutes() {
-	methods := s.sr.Methods()
-	for route, method := range methods {
-		httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			stream := NewBidiStream(method.CallType, method.NewInput)
-			stream.SetWriter(&Http2ResponseWriter{Writer: w})
-			stream.SetReader(r.Body)
-			defer stream.Close()
-			var input proto.Message
-			switch method.CallType {
-			case CallType_Request:
-				var err error
-				input, err = stream.Recv()
-				if err != nil {
-					_ = stream.SendResponse(nil, WrapError(err))
-					return
-				}
-			case CallType_BidiStream, CallType_ClientStream:
-			case CallType_ServerStream:
-				var err error
-				input, err = stream.Recv()
-				if err != nil {
-					_ = stream.SendResponse(nil, WrapError(err))
-					return
-				}
-			}
-			method.Invoker.Invoke(r.Context(), &Request{
-				Method: method,
-				Input:  input,
-				Stream: stream,
-			}, func(rsp *Response) {
-				_ = stream.SendResponse(rsp.Message, rsp.Error)
-			})
-		})
-		s.mux.Handle(route, httpHandler)
-	}
-}*/
-
-type Http2ResponseWriter struct {
-	io.Writer
-}
-
-func (w *Http2ResponseWriter) Write(p []byte) (n int, err error) {
-	n, err = w.Writer.Write(p)
-	if err != nil {
-		return
-	}
-	if flusher, ok := w.Writer.(http.Flusher); ok {
-		flusher.Flush()
-	}
-	return
-}
-
-func (s *server) rpcHandleError(w http.ResponseWriter, err error) {
-	code := http.StatusInternalServerError
-	switch e := err.(type) {
-	case Error:
-		code = int(e.Code())
-	}
-	// 错误结果通过http header头的方式响应
-	w.Header().Set(ErrHeaderKey, err.Error())
-	w.WriteHeader(code)
 }
 
 func (s *server) Exporter() string {

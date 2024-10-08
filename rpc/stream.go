@@ -1,39 +1,40 @@
 package rpc
 
 import (
-	"bytes"
-	"encoding/binary"
 	"errors"
-	"io"
+	"sync/atomic"
 
 	"google.golang.org/protobuf/proto"
-	"sparrow/utils"
+	"sparrow/network"
 )
 
-func NewBidiStream(call CallType, newRecv func() proto.Message) *BidiStream {
-	return &BidiStream{call: call, newRecv: newRecv}
+type StreamSide int
+
+const (
+	StreamSideClient StreamSide = iota
+	StreamSideServer
+)
+
+func NewBidiStream(side StreamSide, conn *network.Connection, streamId uint64, method *MethodInfo) *BidiStream {
+	return &BidiStream{
+		side:     side,
+		conn:     conn,
+		streamId: streamId,
+		msgCh:    make(chan *ProtoPayload, 10),
+		method:   method,
+		rspCh:    make(chan struct{}),
+	}
 }
 
 type BidiStream struct {
-	reader  io.Reader
-	writer  io.Writer
-	ready   chan struct{}
-	newRecv func() proto.Message
-	rspErr  Error
-	rspMsg  proto.Message
-	call    CallType
-}
-
-func (b *BidiStream) SetReader(r io.Reader) {
-	b.reader = r
-}
-
-func (b *BidiStream) SetWriter(w io.Writer) {
-	b.writer = w
-}
-
-func (b *BidiStream) SetReady(ready chan struct{}) {
-	b.ready = ready
+	conn     *network.Connection
+	streamId uint64
+	msgCh    chan *ProtoPayload
+	method   *MethodInfo
+	side     StreamSide
+	closed   uint32
+	rsp      *Response
+	rspCh    chan struct{}
 }
 
 func (b *BidiStream) Send(msg proto.Message) error {
@@ -41,137 +42,76 @@ func (b *BidiStream) Send(msg proto.Message) error {
 	if err != nil {
 		return err
 	}
-
 	payload := &ProtoPayload{
-		Type: b.call,
-		Data: data,
+		Type:     b.method.CallType,
+		Route:    b.method.Route,
+		Data:     data,
+		StreamId: b.streamId,
 	}
-
-	payloadBytes, err := proto.Marshal(payload)
-	if err != nil {
-		return err
-	}
-
-	total := uint32(len(payloadBytes))
-	totalBytes := [4]byte{}
-	binary.LittleEndian.PutUint32(totalBytes[:], total)
-
-	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
-	buffer.Write(totalBytes[:])
-	buffer.Write(payloadBytes)
-	_, err = b.writer.Write(buffer.Bytes())
-	return err
+	b.conn.Write(payload)
+	return nil
 }
 
-func (b *BidiStream) Recv() (proto.Message, error) {
-	if b.ready != nil {
-		<-b.ready
+func (b *BidiStream) Recv(newMsg func() proto.Message) (proto.Message, Error) {
+	payload, ok := <-b.msgCh
+	if !ok {
+		return nil, ErrStreamClosed
 	}
 
-	totalBytes := [4]byte{}
-	err := binary.Read(b.reader, binary.LittleEndian, &totalBytes)
-	if err != nil {
-		return nil, err
+	if payload.GetError() != nil {
+		return nil, NewError(payload.GetError().GetErrCode(), errors.New(payload.GetError().GetErrMsg()))
 	}
 
-	total := binary.LittleEndian.Uint32(totalBytes[:])
-	buffer := utils.ByteBufferPool.Get().(*bytes.Buffer)
-	buffer.Grow(int(total))
-	defer func() {
-		buffer.Reset()
-		utils.ByteBufferPool.Put(buffer)
-	}()
-
-	_, err = io.CopyN(buffer, b.reader, int64(total))
-	if err != nil {
-		return nil, err
+	var msg = newMsg()
+	if err := proto.Unmarshal(payload.GetData(), msg); err != nil {
+		return nil, ErrMsgUnmarshall
 	}
 
-	payload := &ProtoPayload{}
-	err = proto.Unmarshal(buffer.Bytes(), payload)
-	if err != nil {
-		return nil, err
-	}
-
-	var msg proto.Message
-	if len(payload.GetData()) != 0 {
-		msg = b.newRecv()
-		err = proto.Unmarshal(payload.GetData(), msg)
-	}
-
-	if payload.Type == CallType_Response {
-		if payload.GetError() != nil {
-			b.rspMsg = msg
-			return nil, io.EOF
-		}
-		b.rspErr = NewError(payload.GetError().GetErrCode(), errors.New(payload.GetError().GetErrMsg()))
-		return nil, b.rspErr
-	}
-
-	return msg, err
+	return msg, nil
 }
 
-func (b *BidiStream) RecvResponse() (proto.Message, error) {
-	_, err := b.Recv()
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
+func (b *BidiStream) Push(payload *ProtoPayload) {
+	if b.closed == 0 {
+		b.msgCh <- payload
 	}
-	return b.rspMsg, b.rspErr
 }
 
 func (b *BidiStream) Close() {
-	b.CloseReader()
-	b.CloseWriter()
-}
-
-func (b *BidiStream) CloseReader() {
-	if b.reader != nil {
-		if closer, ok := b.reader.(io.Closer); ok {
-			_ = closer.Close()
-		}
+	if atomic.CompareAndSwapUint32(&b.closed, 0, 1) {
+		close(b.msgCh)
 	}
 }
 
-func (b *BidiStream) CloseWriter() {
-	if b.writer != nil {
-		if closer, ok := b.writer.(io.Closer); ok {
-			_ = closer.Close()
-		}
-	}
+func (b *BidiStream) CloseAndRecv() (proto.Message, Error) {
+	b.SendClose()
+	<-b.rspCh
+	b.Close()
+	return b.rsp.Message, b.rsp.Error
 }
 
-func (b *BidiStream) SendResponse(msg proto.Message, rpcErr Error) error {
+func (b *BidiStream) SendClose() {
 	payload := &ProtoPayload{
-		Type: CallType_Response,
+		Type:     CallType_StreamClosed,
+		Route:    b.method.Route,
+		StreamId: b.streamId,
+	}
+	b.conn.Write(payload)
+}
+
+func (b *BidiStream) RecvResp(payload *ProtoPayload) {
+	defer func() {
+		close(b.rspCh)
+		b.Close()
+	}()
+	if payload.GetError() != nil {
+		b.rsp = &Response{Error: NewError(payload.GetError().GetErrCode(), errors.New(payload.GetError().GetErrMsg()))}
+		return
 	}
 
-	if msg != nil {
-		data, err := proto.Marshal(msg)
-		if err != nil {
-			return err
-		}
-		payload.Data = data
+	var msg = b.method.NewOutput()
+	if err := proto.Unmarshal(payload.GetData(), msg); err != nil {
+		b.rsp = &Response{Error: ErrMsgUnmarshall}
+		return
 	}
-
-	if rpcErr != nil {
-		payload.Error = &ProtoError{
-			ErrCode: rpcErr.Code(),
-			ErrMsg:  rpcErr.Error(),
-		}
-	}
-
-	payloadBytes, perr := proto.Marshal(payload)
-	if perr != nil {
-		return perr
-	}
-
-	total := uint32(len(payloadBytes))
-	totalBytes := [4]byte{}
-	binary.LittleEndian.PutUint32(totalBytes[:], total)
-	_, werr := b.writer.Write(totalBytes[:])
-	if werr != nil {
-		return werr
-	}
-	_, werr = b.writer.Write(payloadBytes)
-	return werr
+	b.rsp = &Response{Message: msg}
 }

@@ -22,7 +22,7 @@ type WriteHandler interface {
 }
 
 type ErrorHandler interface {
-	HandleError(ctx HandlerContext, message any)
+	HandleError(ctx HandlerContext, err error)
 }
 
 type ConnectedHandler interface {
@@ -59,15 +59,12 @@ func (h *headHandler) HandleWrite(ctx WriteContext, message any) {
 type tailHandler struct {
 }
 
-func (h *tailHandler) HandleError(ctx context.Context, message any) {
-
-}
-
 type HandlerContext interface {
 	context.Context
 	Connection() *Connection
 	HandleRead(message any)
 	HandleWrite(message any)
+	HandleError(err error)
 }
 
 type ReadContext interface {
@@ -151,6 +148,20 @@ func (hc *handlerContext) HandleClose(err error) {
 		}
 		if handler, ok := next.handler.(CloseHandler); ok {
 			handler.HandleClose(next, err)
+			return
+		}
+	}
+}
+
+func (hc *handlerContext) HandleError(err error) {
+	next := hc
+	for {
+		next = next.next
+		if next == nil {
+			return
+		}
+		if handler, ok := next.handler.(ErrorHandler); ok {
+			handler.HandleError(next, err)
 			return
 		}
 	}

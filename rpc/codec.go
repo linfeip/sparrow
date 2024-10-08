@@ -40,18 +40,12 @@ func (c *Codec) HandleRead(ctx network.ReadContext, message any) {
 	utils.Assert(err)
 
 	total := binary.LittleEndian.Uint32(totalBytes[:])
-	buffer := utils.ByteBufferPool.Get().(*bytes.Buffer)
-	buffer.Grow(int(total))
-	defer func() {
-		buffer.Reset()
-		utils.ByteBufferPool.Put(buffer)
-	}()
-
-	_, err = io.CopyN(buffer, reader, int64(total))
+	buffer := make([]byte, total)
+	_, err = io.ReadFull(reader, buffer)
 	utils.Assert(err)
 
 	payload := &ProtoPayload{}
-	err = proto.Unmarshal(buffer.Bytes(), payload)
+	err = proto.Unmarshal(buffer, payload)
 	utils.Assert(err)
 
 	ctx.HandleRead(payload)

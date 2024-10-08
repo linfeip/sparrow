@@ -114,22 +114,6 @@ func (s *serviceRegistry) AddInterceptor(interceptors ...Interceptor) {
 	s.middleware.AddLast(interceptors...)
 }
 
-func (s *serviceRegistry) Methods() map[string]*MethodInfo {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	handlers := make(map[string]*MethodInfo, len(s.services))
-	for _, serviceInvoker := range s.services {
-		service := serviceInvoker.ServiceInfo()
-		for _, method := range service.Methods {
-			// build route
-			route := "/" + service.ServiceName + "/" + method.MethodName
-			method.Invoker = serviceInvoker
-			handlers[route] = method
-		}
-	}
-	return handlers
-}
-
 func (s *serviceRegistry) workLoop() {
 	if s.registry == nil {
 		return

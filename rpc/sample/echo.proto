@@ -22,16 +22,16 @@ message IncrResponse {
 service EchoService {
   rpc Echo(EchoRequest) returns (EchoResponse);
   rpc Incr(IncrRequest) returns (IncrResponse);
-  rpc Pubsub(stream PubsubArgs) returns (stream PubsubReply);
+  rpc BidiStream(stream BidiStreamArgs) returns (stream BidiStreamArgs);
   rpc ClientStream(stream ClientStreamArgs) returns (ClientStreamReply);
   rpc ServerStream(ServerStreamArgs) returns(stream ServerStreamReply);
 }
 
-message PubsubArgs {
+message BidiStreamArgs {
   string data = 1;
 }
 
-message PubsubReply {
+message BidiStreamReply {
   string data = 1;
 }
 

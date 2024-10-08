@@ -53,6 +53,17 @@ func codegen(plugin *protogen.Plugin) error {
 					MethodDescriptorProto: m,
 					Attrs:                 make(Attrs),
 				}
+
+				if m.GetClientStreaming() && m.GetServerStreaming() {
+					method.CallType = "BidiStream"
+				} else if m.GetServerStreaming() {
+					method.CallType = "ServerStream"
+				} else if m.GetClientStreaming() {
+					method.CallType = "ClientStream"
+				} else {
+					method.CallType = "Unary"
+				}
+
 				if len(m.GetInputType()) > 0 {
 					lastIdx := strings.LastIndexByte(m.GetInputType(), '.')
 					if lastIdx >= 0 {
@@ -110,6 +121,7 @@ type Method struct {
 	Attrs
 	InputTypeName  string
 	OutputTypeName string
+	CallType       string
 }
 
 var sparrowTmp = `
@@ -140,6 +152,7 @@ import (
         var {{$method}} = &rpc.MethodInfo{
             ServiceName: "{{$package}}.{{$service.Attrs.Name}}",
             MethodName:  "{{.Attrs.Name}}",
+			CallType: "{{.CallType}}",
             NewInput: func() proto.Message {
                 return &{{.InputTypeName}}{}
             },
@@ -152,32 +165,62 @@ import (
 
 	var {{.Attrs.Name}}ServiceInfo = &rpc.ServiceInfo{
 		ServiceName: "sample.EchoService",
-		Methods: []*rpc.MethodInfo{
+		Methods: map[string]*rpc.MethodInfo{
             {{- range $methods}}
-                {{.}},
+                {{.}}.Route: {{.}},
             {{- end}}
 		},
 	}
 
-	func New{{.Attrs.Name}}(impl {{.Attrs.Name}}) rpc.ServiceInvoker {
-		return &xxx{{.Attrs.Name}}{
+	func New{{.Attrs.Name}}Server(impl {{.Attrs.Name}}Server) rpc.ServiceInvoker {
+		return &{{untitle .Attrs.Name}}Server{
 			impl: impl,
 		}
 	}
 
-	type xxx{{.Attrs.Name}} struct {
-		impl {{.Attrs.Name}}
+	type {{.Attrs.Name}}Server interface {
+		{{- range .Method}}
+			{{- if eq .CallType "Unary"}}
+			{{camelcase .Name}}(ctx context.Context, request *{{.InputTypeName}}) (*{{.OutputTypeName}}, error)
+			{{- else if eq .CallType "BidiStream"}}
+			{{camelcase .Name}}(ctx context.Context, stream {{$service.Attrs.Name}}{{.Attrs.Name}}ServerBidiStream) error
+			{{- else if eq .CallType "ClientStream"}}
+			{{camelcase .Name}}(ctx context.Context, stream {{$service.Attrs.Name}}{{.Attrs.Name}}ServerClientStream) (*{{.OutputTypeName}}, error)
+			{{- else if eq .CallType "ServerStream"}}
+			{{camelcase .Name}}(ctx context.Context, request *{{.InputTypeName}}, stream {{$service.Attrs.Name}}{{.Attrs.Name}}ServerClientStream) error
+			{{- end}}
+		{{- end}}
 	}
 
-    func (x *xxx{{.Attrs.Name}}) Invoke(ctx context.Context, req *rpc.Request, callback rpc.CallbackFunc) {
+	type {{untitle .Attrs.Name}}Server struct {
+		impl {{.Attrs.Name}}Server
+	}
+
+    func (x *{{untitle .Attrs.Name}}Server) Invoke(ctx context.Context, req *rpc.Request, callback rpc.CallbackFunc) {
+		{{- $server := untitle .Attrs.Name}}
         switch req.Method.MethodName {
             {{- range .Method}}
             case "{{.Attrs.Name}}":
-            reply, err := x.impl.{{.Attrs.Name}}(ctx, req.Input.(*{{.InputTypeName}}))
-            callback(&rpc.Response{
-                Message: reply,
-                Error:   rpc.WrapError(err),
-            })
+				{{- if eq .CallType "Unary"}}
+				reply, err := x.impl.{{.Attrs.Name}}(ctx, req.Input.(*{{.InputTypeName}}))
+				callback(&rpc.Response{
+					Message: reply,
+					Error:   rpc.WrapError(err),
+				})
+				{{- else if eq .CallType "BidiStream"}}
+				err := x.impl.{{.Attrs.Name}}(ctx, &{{$server}}{{.Attrs.Name}}ServerBidiStream{
+					stream: req.Stream,
+				})
+				callback(&rpc.Response{Error: rpc.WrapError(err)})
+				{{- else if eq .CallType "ClientStream"}}
+				err := x.impl.{{.Attrs.Name}}(ctx, &{{$server}}{{.Attrs.Name}}ServerClientStream{
+					stream: req.Stream,
+				})
+				callback(&rpc.Response{Error: rpc.WrapError(err)})
+				{{- else if eq .CallType "ServerStream"}}
+				err := x.impl.ServerStream(ctx, req.Input.(*{{.InputTypeName}}), &{{$server}}{{.Attrs.Name}}ServerServerStream{stream: req.Stream})
+				callback.Error(rpc.WrapError(err))
+				{{- end }}
             {{- end}}
             default:
             callback(&rpc.Response{
@@ -186,42 +229,197 @@ import (
         }
     }
 
-    func (x *xxx{{.Attrs.Name}}) ServiceInfo() *rpc.ServiceInfo {
+	{{- range .Method}}
+		{{- if eq .CallType "BidiStream"}}
+			type {{$service.Attrs.Name}}{{.Attrs.Name}}ServerBidiStream interface {
+				Send(msg *{{.OutputTypeName}}) error
+				Recv() (*{{.InputTypeName}}, error)
+			}
+			type {{untitle $service.Attrs.Name}}{{.Attrs.Name}}ServerBidiStream struct {
+				stream *rpc.BidiStream
+			}
+			func (e *{{untitle $service.Attrs.Name}}{{.Attrs.Name}}ServerBidiStream) Send(msg *{{.OutputTypeName}}) error {
+				return e.stream.Send(msg)
+			}
+			
+			func (e *{{untitle $service.Attrs.Name}}{{.Attrs.Name}}ServerBidiStream) Recv() (*{{.InputTypeName}}, error) {
+				reply, err := e.stream.Recv({{$service.Attrs.Name}}{{.Attrs.Name}}MethodInfo.NewInput)
+				if err != nil {
+					return nil, err
+				}
+				return reply.(*{{.InputTypeName}}), nil
+			}
+		{{- else if eq .CallType "ClientStream"}}
+			type {{$service.Attrs.Name}}{{.Attrs.Name}}ServerClientStream interface {
+				Recv() (*{{.InputTypeName}}, error)
+			}
+			type {{untitle $service.Attrs.Name}}{{.Attrs.Name}}ServerBidiStream struct {
+				stream *rpc.BidiStream
+			}
+			func (e *{{untitle $service.Attrs.Name}}{{.Attrs.Name}}ServerBidiStream) Recv() (*{{.InputTypeName}}, error) {
+				reply, err := e.stream.Recv({{$service.Attrs.Name}}{{.Attrs.Name}}MethodInfo.NewInput)
+				if err != nil {
+					return nil, err
+				}
+				return reply.(*{{.InputTypeName}}), nil
+			}
+		{{- else if eq .CallType "ServerStream"}}
+			type {{$service.Attrs.Name}}{{.Attrs.Name}}ServerBidiStream interface {
+				Send(msg *{{.OutputTypeName}}) error
+			}
+			type {{untitle $service.Attrs.Name}}{{.Attrs.Name}}ServerBidiStream struct {
+				stream *rpc.BidiStream
+			}
+			func (e *{{untitle $service.Attrs.Name}}{{.Attrs.Name}}ServerBidiStream) Send(msg *{{.OutputTypeName}}) error {
+				return e.stream.Send(msg)
+			}
+		{{- end}}
+	{{- end}}
+
+    func (x *{{untitle .Attrs.Name}}Server) ServiceInfo() *rpc.ServiceInfo {
         return {{.Attrs.Name}}ServiceInfo
     }
 
-	type {{.Attrs.Name}} interface {
-		{{- range .Method}}
-			{{camelcase .Name}}(ctx context.Context, request *{{.InputTypeName}}) (*{{.OutputTypeName}}, error)
-		{{- end}}
-	}
-
-
     func New{{.Attrs.Name}}Client(client *rpc.Client) {{.Attrs.Name}} {
-        return &{{.Attrs.Name}}Client{
+        return &{{untitle .Attrs.Name}}Client{
             client: client,
         }
     }
+	
+	type {{.Attrs.Name}}Client interface {
+		{{- range .Method}}
+			{{- if eq .CallType "Unary"}}
+			{{.Attrs.Name}}(ctx context.Context, request *{{.InputTypeName}}) (*{{.OutputTypeName}}, error)
+			{{- else if eq .CallType "BidiStream"}}
+			{{.Attrs.Name}}(ctx context.Context) ({{$service.Attrs.Name}}{{.Attrs.Name}}ClientBidiStream, error)
+			{{- else if eq .CallType "ClientStream"}}
+			{{.Attrs.Name}}(ctx context.Context) ({{$service.Attrs.Name}}{{.Attrs.Name}}ClientClientStream, error)
+			{{- else if eq .CallType "ServerStream"}}
+			{{.Attrs.Name}}(ctx context.Context, request *{{.InputTypeName}}) ({{$service.Attrs.Name}}{{.Attrs.Name}}ClientServerStream, error)
+			{{- end}}
+		{{- end}}
+	}
 
-    type {{.Attrs.Name}}Client struct {
+    type {{untitle .Attrs.Name}}Client struct {
         client *rpc.Client
     }
 
     {{- range .Method}}
-    func (e *{{$service.Attrs.Name}}Client) {{.Attrs.Name}}(ctx context.Context, request *{{.InputTypeName}}) (*{{.OutputTypeName}}, error) {
-        rpcRequest := &rpc.Request{
-            Method: {{$service.Attrs.Name}}{{.Attrs.Name}}MethodInfo,
-            Input:  request,
-        }
-        var resp *rpc.Response
-        e.client.Invoke(ctx, rpcRequest, func(response *rpc.Response) {
-            resp = response
-        })
-        if resp.Error != nil {
-            return nil, resp.Error
-        }
-        return resp.Message.(*{{.OutputTypeName}}), nil
-    }
-    {{- end}}
+		{{- if eq .CallType "Unary"}}
+		func (e *{{untitle $service.Attrs.Name}}Client) {{.Attrs.Name}}(ctx context.Context, request *{{.InputTypeName}}) (*{{.OutputTypeName}}, error) {
+			rpcRequest := &rpc.Request{
+				Method: {{$service.Attrs.Name}}{{.Attrs.Name}}MethodInfo,
+				Input:  request,
+			}
+			var resp *rpc.Response
+			e.client.Invoke(ctx, rpcRequest, func(response *rpc.Response) {
+				resp = response
+			})
+			if resp.Error != nil {
+				return nil, resp.Error
+			}
+			return resp.Message.(*{{.OutputTypeName}}), nil
+		}
+		{{- if eq .CallType "BidiStream"}}
+		
+		type {{$service.Attrs.Name}}{{.Attrs.Name}}ClientBidiStream interface {
+			Send(*{{.InputTypeName}}) error
+			Recv() (*{{.OutputTypeName}}, error)
+		}
+
+		type {{untitle $service.Attrs.Name}}{{.Attrs.Name}}ClientBidiStream struct {
+			stream *rpc.BidiStream
+		}
+
+		func (e *{{untitle $service.Attrs.Name}}{{.Attrs.Name}}ClientBidiStream) Send(msg *{{.InputTypeName}}) error {
+			return e.stream.Send(msg)
+		}
+
+		func (e *{{untitle $service.Attrs.Name}}{{.Attrs.Name}}ClientBidiStream) Recv() (*{{.OutputTypeName}}, error) {
+			reply, err := e.stream.Recv({{$service.Attrs.Name}}{{.Attrs.Name}}MethodInfo.NewOutput)
+			if err != nil {
+				return nil, err
+			}
+			return reply.(*{{.OutputTypeName}}), nil
+		}
+		
+		func (e *{{untitle $service.Attrs.Name}}Client) {{.Attrs.Name}}(ctx context.Context) ({{$service.Attrs.Name}}{{.Attrs.Name}}ClientBidiStream, error) {
+			req := &rpc.Request{
+				Method: {{$service.Attrs.Name}}{{.Attrs.Name}}MethodInfo,
+			}
+			stream, err := e.client.OpenStream(ctx, req)
+			if err != nil {
+				return nil, err
+			}
+			return &{{untitle $service.Attrs.Name}}{{.Attrs.Name}}ClientBidiStream{stream: stream}, nil
+		}
+		{{- if eq .CallType "ClientStream"}}
+		
+		type {{$service.Attrs.Name}}{{.Attrs.Name}}ClientClientStream interface {
+			Send(msg *{{.InputTypeName}}) error
+			RecvAndClose() (*{{.OutputTypeName}}, error)
+		}
+
+		type {{untitle $service.Attrs.Name}}{{.Attrs.Name}}ClientClientStream struct {
+			stream *rpc.BidiStream
+		}
+
+		func (e *{{untitle $service.Attrs.Name}}{{.Attrs.Name}}ClientClientStream) Send(msg *{{.InputTypeName}}) error {
+			return e.stream.Send(msg)
+		}
+
+		func (e *{{untitle $service.Attrs.Name}}{{.Attrs.Name}}ClientClientStream) CloseAndRecv() (*{{.OutputTypeName}}, error) {
+			msg, err := e.stream.CloseAndRecv()
+			if err != nil {
+				return nil, err
+			}
+			return msg.(*{{.OutputTypeName}}), nil
+		}
+
+		func (e *{{untitle $service.Attrs.Name}}Client) {{.Attrs.Name}}(ctx context.Context) ({{$service.Attrs.Name}}{{.Attrs.Name}}ClientClientStream, error) {
+			req := &rpc.Request{
+				Method: {{$service.Attrs.Name}}{{.Attrs.Name}}MethodInfo,
+			}
+			stream, err := e.client.OpenStream(ctx, req)
+			if err != nil {
+				return nil, err
+			}
+			return &{{untitle $service.Attrs.Name}}{{.Attrs.Name}}ClientClientStream{stream: stream}, nil
+		}
+		{{- if eq .CallType "ServerStream"}}
+
+		type {{$service.Attrs.Name}}{{.Attrs.Name}}ClientServerStream interface {
+			Recv() (*{{.OutputTypeName}}, error)
+		}
+
+		type {{untitle $service.Attrs.Name}}{{.Attrs.Name}}ClientServerStream struct {
+			stream *rpc.BidiStream
+		}
+
+		func (e *{{untitle $service.Attrs.Name}}{{.Attrs.Name}}ClientServerStream) Recv() (*{{.OutputTypeName}}, error) {
+			msg, err := e.stream.Recv({{$service.Attrs.Name}}{{.Attrs.Name}}MethodInfo.NewOutput)
+			if err != nil {
+				return nil, err
+			}
+			return msg.(*{{.OutputTypeName}}), nil
+		}
+		
+		func (e *{{untitle $service.Attrs.Name}}Client) {{.Attrs.Name}}(ctx context.Context, request *{{.InputTypeName}}) ({{$service.Attrs.Name}}{{.Attrs.Name}}ClientServerStream, error) {
+			req := &rpc.Request{
+				Method: {{$service.Attrs.Name}}{{.Attrs.Name}}MethodInfo,
+				Input:  request,
+			}
+			stream, err := e.client.OpenStream(ctx, req)
+			if err != nil {
+				return nil, err
+			}
+			err = stream.Send(request)
+			if err != nil {
+				return nil, err
+			}
+			return &{{untitle $service.Attrs.Name}}{{.Attrs.Name}}ClientServerStream{stream: stream}, nil
+		}
+		{{- end}}
+	{{- end}}
 {{- end}}
 `

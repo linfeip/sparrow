@@ -57,7 +57,6 @@ type MethodInfo struct {
 	ServiceName string
 	MethodName  string
 	CallType    CallType
-	Invoker     Invoker
 }
 
 type Response struct {
