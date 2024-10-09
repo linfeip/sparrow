@@ -18,13 +18,13 @@ func (c *Codec) HandleWrite(ctx network.WriteContext, message any) {
 	payloadBytes, err := proto.Marshal(payload)
 	utils.Assert(err)
 
+	total := uint32(len(payloadBytes))
 	buffer := utils.ByteBufferPool.Get().(*bytes.Buffer)
+	buffer.Grow(int(total))
 	defer func() {
 		buffer.Reset()
 		utils.ByteBufferPool.Put(buffer)
 	}()
-
-	total := uint32(len(payloadBytes))
 	totalBytes := [4]byte{}
 	binary.LittleEndian.PutUint32(totalBytes[:], total)
 	buffer.Write(totalBytes[:])

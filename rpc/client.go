@@ -138,17 +138,15 @@ type clientInvoker struct {
 
 func (x *clientInvoker) Invoke(ctx context.Context, req *Request, callback CallbackFunc) {
 	stream, _ := x.OpenStream(ctx, req)
-	defer stream.Close()
-
 	err := stream.Send(req.Input)
 	if err != nil {
 		callback(&Response{Error: WrapError(err)})
 		return
 	}
-	rsp, rErr := stream.Recv(req.Method.NewOutput)
+	rsp, rErr := stream.Resp()
 	callback(&Response{Message: rsp, Error: rErr})
 }
 
 func (x *clientInvoker) OpenStream(ctx context.Context, req *Request) (*BidiStream, error) {
-	return x.clientHandler.OpenStream(ctx, req)
+	return x.clientHandler.OpenStream(req)
 }

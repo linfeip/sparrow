@@ -1,7 +1,7 @@
 package rpc
 
 import (
-	"context"
+	_ "net/http/pprof"
 	"sync"
 	"sync/atomic"
 
@@ -18,7 +18,6 @@ type ServerHandler struct {
 }
 
 func (s *ServerHandler) HandleError(ctx network.HandlerContext, err error) {
-	logger.Errorf("server handle error: %v", err)
 	ctx.HandleError(err)
 }
 
@@ -37,9 +36,7 @@ func (s *ServerHandler) HandleRead(ctx network.ReadContext, message any) {
 		stream.Close()
 		return
 	}
-
 	stream.Push(payload)
-
 	if exists {
 		return
 	}
@@ -122,25 +119,31 @@ type ClientHandler struct {
 	rw      sync.RWMutex
 }
 
+func (c *ClientHandler) HandleError(ctx network.HandlerContext, err error) {
+	logger.Errorf("client error: %v", err)
+}
+
 func (c *ClientHandler) HandleRead(ctx network.ReadContext, message any) {
 	payload := message.(*ProtoPayload)
 	c.rw.RLock()
-	if stream, ok := c.streams[payload.GetStreamId()]; ok {
-		if payload.GetType() == CallType_StreamClosed {
-			stream.Close()
-			return
-		}
-
-		if payload.GetType() == CallType_Response {
-			stream.RecvResp(payload)
-			return
-		}
-
-		_ = utils.GoPool.Submit(func() {
-			stream.Push(payload)
-		})
-	}
+	var stream = c.streams[payload.GetStreamId()]
 	c.rw.RUnlock()
+	if stream == nil {
+		return
+	}
+	if payload.GetType() == CallType_StreamClosed {
+		stream.Close()
+		return
+	}
+
+	if payload.GetType() == CallType_Response {
+		stream.recvResp(payload)
+		return
+	}
+
+	_ = utils.GoPool.Submit(func() {
+		stream.Push(payload)
+	})
 	ctx.HandleRead(message)
 }
 
@@ -148,22 +151,10 @@ func (c *ClientHandler) HandleWrite(ctx network.WriteContext, message any) {
 	ctx.HandleWrite(message)
 }
 
-func (c *ClientHandler) OpenStream(ctx context.Context, req *Request) (*BidiStream, error) {
-	c.rw.RLock()
+func (c *ClientHandler) OpenStream(req *Request) (*BidiStream, error) {
 	streamId := atomic.AddUint64(&c.nextId, 1)
-	if stream, ok := c.streams[streamId]; ok {
-		defer c.rw.RUnlock()
-		return stream, nil
-	}
-	c.rw.RUnlock()
-
 	c.rw.Lock()
 	defer c.rw.Unlock()
-	// double check
-	if stream, ok := c.streams[streamId]; ok {
-		return stream, nil
-	}
-
 	stream := NewBidiStream(StreamSideClient, c.conn, streamId, req.Method)
 	c.streams[streamId] = stream
 	return stream, nil

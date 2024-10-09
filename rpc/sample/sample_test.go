@@ -48,19 +48,26 @@ func init() {
 		panic(err)
 	}
 	client.AddLast(clientMiddleware())
+
+	go func() {
+		_ = http.ListenAndServe(":6070", nil)
+	}()
+
 	time.Sleep(time.Second)
 }
 
 func TestService(t *testing.T) {
 	echoClient := NewEchoServiceClient(client)
 
-	var num = 1
+	var num = 200
 	var wg sync.WaitGroup
 	for i := 0; i < num; i++ {
 		wg.Add(1)
 		i := i
 		go func() {
-			defer wg.Done()
+			defer func() {
+				wg.Done()
+			}()
 			result, err := echoClient.Echo(backCtx, &EchoRequest{
 				Message: fmt.Sprintf("HelloWorld_%d", i),
 			})
