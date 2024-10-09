@@ -22,7 +22,7 @@ message IncrResponse {
 service EchoService {
   rpc Echo(EchoRequest) returns (EchoResponse);
   rpc Incr(IncrRequest) returns (IncrResponse);
-  rpc BidiStream(stream BidiStreamArgs) returns (stream BidiStreamArgs);
+  rpc BidiStream(stream BidiStreamArgs) returns (stream BidiStreamReply);
   rpc ClientStream(stream ClientStreamArgs) returns (ClientStreamReply);
   rpc ServerStream(ServerStreamArgs) returns(stream ServerStreamReply);
 }

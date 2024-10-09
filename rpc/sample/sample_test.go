@@ -77,13 +77,13 @@ func TestService(t *testing.T) {
 
 func TestStreamService(t *testing.T) {
 	cli := NewEchoServiceClient(client)
-	stream, err := cli.Pubsub(backCtx)
+	stream, err := cli.BidiStream(backCtx)
 	if err != nil {
 		panic(err)
 	}
 	for {
 		now := time.Now().String()
-		err = stream.Send(&PubsubArgs{
+		err = stream.Send(&BidiStreamArgs{
 			Data: now,
 		})
 		if err != nil {

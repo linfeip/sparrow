@@ -50,7 +50,7 @@ func (s *ServerHandler) HandleRead(ctx network.ReadContext, message any) {
 	}
 
 	switch payload.GetType() {
-	case CallType_Request, CallType_ServerStream:
+	case CallType_Unary, CallType_ServerStream:
 		input, err := stream.Recv(method.NewInput)
 		utils.Assert(err)
 		request.Input = input

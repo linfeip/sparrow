@@ -5,7 +5,7 @@ package rpc;
 option go_package = "./;rpc";
 
 enum CallType {
-  Request = 0;
+  Unary = 0;
   Response = 1;
   BidiStream = 2;
   ClientStream = 3;

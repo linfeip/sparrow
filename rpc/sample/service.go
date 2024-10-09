@@ -21,13 +21,13 @@ func (s *service) Echo(ctx context.Context, request *EchoRequest) (*EchoResponse
 	return &EchoResponse{Message: request.GetMessage()}, nil
 }
 
-func (s *service) Pubsub(ctx context.Context, server IEchoServicePubsubServer) error {
+func (s *service) BidiStream(ctx context.Context, stream EchoServiceBidiStreamServerBidiStream) error {
 	for {
-		data, err := server.Recv()
+		data, err := stream.Recv()
 		if err != nil {
 			return err
 		}
-		err = server.Send(&PubsubReply{
+		err = stream.Send(&BidiStreamReply{
 			Data: data.GetData(),
 		})
 		if err != nil {
@@ -36,7 +36,7 @@ func (s *service) Pubsub(ctx context.Context, server IEchoServicePubsubServer) e
 	}
 }
 
-func (s *service) ClientStream(ctx context.Context, stream EchoServiceServerClientStream) (*ClientStreamReply, error) {
+func (s *service) ClientStream(ctx context.Context, stream EchoServiceClientStreamServerClientStream) (*ClientStreamReply, error) {
 	var values []string
 	for {
 		args, err := stream.Recv()
@@ -51,7 +51,7 @@ func (s *service) ClientStream(ctx context.Context, stream EchoServiceServerClie
 	return &ClientStreamReply{Value: strings.Join(values, ",")}, nil
 }
 
-func (s *service) ServerStream(ctx context.Context, request *ServerStreamArgs, stream EchoServiceServerServerStream) error {
+func (s *service) ServerStream(ctx context.Context, request *ServerStreamArgs, stream EchoServiceServerStreamServerServerStream) error {
 	num, _ := strconv.Atoi(request.GetValue())
 	for i := 0; i < num; i++ {
 		err := stream.Send(&ServerStreamReply{
